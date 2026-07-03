@@ -1,0 +1,58 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "pdf-ocrer"
+version = "0.1.0"
+description = "Batch OCR scanned PDFs into searchable PDFs and rename them with an OpenAI-compatible LLM."
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+authors = [
+  { name = "leon80148" },
+]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Environment :: Console",
+  "Environment :: Win32 (MS Windows)",
+  "Intended Audience :: End Users/Desktop",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Office/Business",
+]
+dependencies = [
+  "paddleocr>=3.7",
+  "pymupdf>=1.26",
+  "openai>=1.60,<3",
+]
+
+[project.optional-dependencies]
+paddle-cpu = ["paddlepaddle==3.3.*"]
+dev = ["pytest>=8", "ruff"]
+
+[project.scripts]
+pdf-ocrer = "pdf_ocrer.cli:main"
+
+[project.gui-scripts]
+pdf-ocrer-gui = "pdf_ocrer.gui:run_gui"
+
+[project.urls]
+Homepage = "https://github.com/leon80148/pdf-ocrer"
+Issues = "https://github.com/leon80148/pdf-ocrer/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/pdf_ocrer"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = '-m "not integration"'
+markers = ["integration: needs real PaddleOCR models"]
+pythonpath = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+

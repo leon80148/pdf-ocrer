@@ -1,0 +1,223 @@
+# pdf-ocrer
+
+English developer README: [README.md](README.md)
+
+pdf-ocrer 是給診所行政人員使用的批次 OCR 工具。你選一個資料夾，它會把裡面的掃描
+PDF 轉成可搜尋的雙層 PDF：原本的影像保留不動，另外加上一層看不見的文字。
+
+它也可以讀取 OCR 文字，請本機或雲端的 OpenAI 相容 LLM 依照
+`naming_prompt.txt` 自動命名輸出檔。原始檔案絕不修改，所有結果都放在
+`OCR輸出` 子資料夾，並產生 Excel 可直接開啟的 CSV 對照表。
+
+## 你會得到什麼
+
+- 掃描 PDF 變成可以 Ctrl+F 搜尋的 PDF。
+- 輸出檔依文件內容自動命名。
+- 原始 PDF 留在原資料夾，不會被覆蓋。
+- 每次批次都有 `對照表_YYYYMMDD_HHMMSS.csv`，方便回查原檔名、新檔名和處理狀態。
+- 加密 PDF 不會讓整批中斷，會被略過並記錄在 CSV。
+
+## 安裝前準備
+
+- Python 3.11 以上，建議 Python 3.12。
+- Windows 建議安裝 Microsoft Visual C++ Redistributable 2019 以上。
+- 第一次執行 OCR 會下載 PP-OCRv6 模型，大約 100 MB，位置是
+  `~/.paddlex/official_models`。
+
+如果診所電腦不能上網，可以先在可上網的電腦跑過一次 OCR，再把整個
+`official_models` 資料夾複製到離線電腦的相同位置。
+
+## 安裝方式
+
+目前請從原始碼資料夾安裝：
+
+```powershell
+git clone https://github.com/leon80148/pdf-ocrer.git
+cd pdf-ocrer
+py -3.12 -m venv .venv
+.\.venv\Scripts\activate
+python -m pip install -U pip
+python -m pip install -e ".[paddle-cpu]"
+```
+
+`paddle-cpu` 會安裝 CPU 版 PaddlePaddle，這是目前測試過的完整 OCR 環境。
+未來若已發佈成套件，完整安裝指令會是：
+
+```powershell
+python -m pip install "pdf-ocrer[paddle-cpu]"
+```
+
+在那之前，請以上面的原始碼安裝方式為準。
+
+## 最簡單的使用方式
+
+1. 把要處理的 PDF 放在同一個資料夾。
+2. 開啟命令列，啟動圖形介面：
+
+   ```powershell
+   pdf-ocrer
+   ```
+
+3. 選擇資料夾，按開始。
+4. 完成後打開原資料夾裡的 `OCR輸出`。
+5. 檢查新的 PDF 和 `對照表_YYYYMMDD_HHMMSS.csv`。
+
+也可以直接用命令列批次處理：
+
+```powershell
+pdf-ocrer "C:\Scans"
+```
+
+## 命令列選項
+
+```text
+pdf-ocrer                     # 不加資料夾，啟動 GUI
+pdf-ocrer <folder>            # 批次處理資料夾裡的 PDF
+  --config PATH               # 指定 config.toml
+  --no-llm                    # 不使用 LLM 命名
+  --dpi N                     # 指定 OCR 解析度
+  --version                   # 顯示版本
+```
+
+退出碼：
+
+| 代碼 | 意義 |
+|---:|---|
+| 0 | 全部成功，或 GUI / 版本指令正常結束。 |
+| 1 | 設定錯誤，或至少一個檔案失敗。 |
+| 2 | 資料夾不存在、不是資料夾，或裡面沒有 PDF。 |
+
+處理中會顯示進度，例如：
+
+```text
+[3/12] scan.pdf 第 5/20 頁
+```
+
+## 輸出位置
+
+假設原資料夾是：
+
+```text
+C:\Scans
+```
+
+輸出會在：
+
+```text
+C:\Scans\OCR輸出\
+  對照表_YYYYMMDD_HHMMSS.csv
+  <重新命名後的可搜尋 PDF>.pdf
+```
+
+CSV 使用 `utf-8-sig` 編碼，Excel 開啟比較不會亂碼。每處理完一個檔案就會寫入一列，
+所以中途取消或當機時，已完成的紀錄仍會保留。
+
+## 自動命名
+
+預設會使用 `naming_prompt.txt` 當命名規則。你可以直接打開這個檔案，修改想要的檔名
+格式，例如日期、文件類型、病患姓名或發文機關。
+
+如果 LLM 停用、斷線、逾時或回傳不可用文字，檔名會改用原檔名加上 `_OCR`。
+
+停用 LLM 命名有兩種方式：
+
+```powershell
+pdf-ocrer "C:\Scans" --no-llm
+```
+
+或在 `config.toml` 設定：
+
+```toml
+[llm]
+provider = "none"
+```
+
+## 隱私建議
+
+如果使用本機 Ollama，OCR 文字不會離開電腦。這是診所、醫療行政、病歷相關文件比較
+安全的做法。
+
+如果使用雲端 LLM，pdf-ocrer 只會送出前面一小段 OCR 文字供命名使用，不會上傳整份
+PDF。預設最多送出 `naming.max_chars_to_llm = 3000` 個字元，也會受到
+`naming.max_pages_to_llm` 限制。
+
+## LLM 設定
+
+預設 provider 是 `openai_compatible`，可連接任何 OpenAI 相容 API。API key 可以寫在
+`config.toml`：
+
+```toml
+[llm]
+api_key = "..."
+```
+
+也可以使用環境變數：
+
+```powershell
+$env:PDF_OCRER_API_KEY = "..."
+```
+
+常見 `base_url` 範例：
+
+| 服務 | `base_url` 範例 | 備註 |
+|---|---|---|
+| Ollama | `http://localhost:11434/v1` | 預設值，本機執行，資料不離開電腦。 |
+| OpenAI | `https://api.openai.com/v1` | 需要 API key。 |
+| Gemini OpenAI 相容端點 | `https://generativelanguage.googleapis.com/v1beta/openai` | 使用相容端點。 |
+| Anthropic 相容端點 | `https://api.anthropic.com/v1` | 使用設定範本中的相容端點。 |
+| LM Studio | `http://localhost:1234/v1` | 指向本機 LM Studio server。 |
+| vLLM | `http://localhost:8000/v1` | 指向你的 vLLM server。 |
+| Groq | `https://api.groq.com/openai/v1` | 需要 API key。 |
+| OpenRouter | `https://openrouter.ai/api/v1` | 需要 API key。 |
+
+完整設定範本請看 [config.example.toml](config.example.toml)。
+
+## 速度與模型
+
+目前實測基準：
+
+- CPU、PP-OCRv6 medium、200 DPI、`enable_mkldnn=false`：約 22 秒一頁。
+
+`enable_mkldnn=false` 是必要預設值，因為 PaddlePaddle 3.3.0 的 oneDNN/MKLDNN
+路徑有已知錯誤。細節記錄在
+[docs/specs/paddleocr-api-facts.md §2](docs/specs/paddleocr-api-facts.md)。
+
+如果速度比準確度更重要，可以在 `config.toml` 嘗試小模型：
+
+```toml
+[ocr]
+det_model_name = "PP-OCRv6_small_det"
+rec_model_name = "PP-OCRv6_small_rec"
+```
+
+若你的 PaddleOCR 安裝提供 tiny 模型，也可以用同樣欄位調整；速度可能較快，但辨識率
+可能下降。
+
+## 已知限制
+
+- 如果頁面內容本身是橫躺的，PDF 顯示時也橫躺，且沒有 `/Rotate` 資訊可補償，仍可
+  搜尋，但反白方向可能不準。
+- 歪斜文字行仍可搜尋，但 v1 使用水平文字層，反白位置可能略有偏移。
+- 需要密碼的 PDF 會被略過，並記錄在 CSV。
+- 不會掃描子資料夾。
+- `ocr.device` 設定欄位存在，但目前只宣稱 CPU 路徑已測試，不宣稱 GPU 支援。
+
+## 對位除錯
+
+如果想檢查文字層是否對齊，可以在 `config.toml` 開啟：
+
+```toml
+[debug]
+visible_text = true
+```
+
+這會把文字層顯示成紅字。確認完請關掉，正常輸出應使用隱形文字層。
+
+## 開發與貢獻
+
+開發環境、測試方式、程式風格、如何新增 LLM provider，請看
+[CONTRIBUTING.md](CONTRIBUTING.md)。這份 README 只保留使用者需要的操作步驟。
+
+## 授權
+
+MIT。詳見 [LICENSE](LICENSE)。

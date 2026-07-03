@@ -1,0 +1,74 @@
+# pdf_ocrer 設定範本
+# 請複製為 config.toml 後調整；未設定欄位會使用預設值。
+
+[ocr]
+# OCR 渲染解析度。預設：200，範圍：72–600。
+dpi = 200
+# PaddleOCR 語言。預設：繁體中文。
+lang = "chinese_cht"
+# OCR 最低信心分數。預設：0.5，範圍：0–1。
+min_confidence = 0.5
+# 已有文字層的頁面是否略過 OCR。預設：true。
+skip_pages_with_text = true
+# 判定已有文字層所需的最少字元數。預設：30。
+min_existing_chars = 30
+# OCR 執行裝置。預設：cpu。
+device = "cpu"
+# 是否啟用 MKLDNN/oneDNN。預設：false。
+enable_mkldnn = false
+# 文字偵測長邊限制。預設：未設定，使用 PaddleOCR 函式庫預設值。
+# det_limit_side_len = 1536
+# 偵測模型名稱。預設：未設定，使用 PaddleOCR 函式庫預設值。
+# det_model_name = "PP-OCRv6_small_det"
+# 辨識模型名稱。預設：未設定，使用 PaddleOCR 函式庫預設值。
+# rec_model_name = "PP-OCRv6_small_rec"
+
+[output]
+# 輸出子資料夾名稱。預設：OCR輸出。
+subdir_name = "OCR輸出"
+# CSV 對照表檔名前綴。預設：對照表。
+csv_prefix = "對照表"
+
+[naming]
+# 是否啟用 LLM 命名。預設：true。
+enabled = true
+# 已有文字層的檔案是否也使用文字命名。預設：true。
+rename_files_with_text = true
+# 命名 prompt 檔案。預設：naming_prompt.txt。
+prompt_file = "naming_prompt.txt"
+# 送入 LLM 的最多字元數。預設：3000。
+max_chars_to_llm = 3000
+# 送入 LLM 的最多頁數。預設：2。
+max_pages_to_llm = 2
+# 檔名最大長度。預設：80，範圍：10–200。
+max_filename_length = 80
+# LLM 停用或失敗時附加於原檔名的尾碼。預設：_OCR。
+fallback_suffix = "_OCR"
+
+[llm]
+# LLM provider。預設：openai_compatible；停用可設為 "none"。
+provider = "openai_compatible"
+# OpenAI 相容 API base URL。預設為 Ollama 本機端點。
+base_url = "http://localhost:11434/v1"
+# Ollama 範例：
+# base_url = "http://localhost:11434/v1"
+# OpenAI 範例：
+# base_url = "https://api.openai.com/v1"
+# Gemini OpenAI 相容端點範例：
+# base_url = "https://generativelanguage.googleapis.com/v1beta/openai"
+# Anthropic 相容端點範例：
+# base_url = "https://api.anthropic.com/v1"
+# 模型名稱。預設：qwen3:8b。
+model = "qwen3:8b"
+# API key。空字串會讀取環境變數 PDF_OCRER_API_KEY。預設：空字串。
+api_key = ""
+# API timeout 秒數。預設：60.0。
+timeout_seconds = 60.0
+# 取樣溫度。預設：0.1。
+temperature = 0.1
+# 回應 token 上限。預設：1024。
+max_tokens = 1024
+
+[debug]
+# 是否顯示紅色文字層，供對位除錯。預設：false。
+visible_text = false
