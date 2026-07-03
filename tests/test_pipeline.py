@@ -12,7 +12,7 @@ from fixtures_gen import GT_LINES
 from pdf_ocrer.config import AppConfig, DebugConfig, LlmConfig, NamingConfig, OcrConfig, OutputConfig
 from pdf_ocrer.llm_providers import LLMError
 from pdf_ocrer.ocr_engine import OcrLine
-from pdf_ocrer.pipeline import FileStatus, run_batch
+from pdf_ocrer.pipeline import FileResult, FileStatus, run_batch
 
 _DPI = 200
 _FONT = pymupdf.Font("cjk")
@@ -60,8 +60,16 @@ def test_run_batch_statuses_csv_collision_and_preserves_sources(work_folder) -> 
     output_dir.mkdir()
     shutil.copy2(work_folder / "native.pdf", output_dir / "decoy.pdf")
     before = _source_hashes(work_folder)
+    file_results: list[FileResult] = []
 
-    summary = run_batch(work_folder, cfg, FakeEngine(), StaticClient("20260615_診斷證明書"), _PROMPT)
+    summary = run_batch(
+        work_folder,
+        cfg,
+        FakeEngine(),
+        StaticClient("20260615_診斷證明書"),
+        _PROMPT,
+        file_cb=file_results.append,
+    )
 
     assert summary.cancelled is False
     assert [result.source.name for result in summary.results] == [
@@ -88,6 +96,15 @@ def test_run_batch_statuses_csv_collision_and_preserves_sources(work_folder) -> 
     assert len(rows) == 1 + len(summary.results)
     assert [row[0] for row in rows[1:]] == [result.source.name for result in summary.results]
     assert _source_hashes(work_folder) == before
+    assert len(file_results) == len(summary.results)
+    assert [result.source.name for result in file_results] == [
+        "corrupt.pdf",
+        "encrypted.pdf",
+        "native.pdf",
+        "scanned.pdf",
+    ]
+    assert all(isinstance(result, FileResult) for result in file_results)
+    assert [result.status for result in file_results] == [result.status for result in summary.results]
 
 
 def test_run_batch_llm_errors_fallback_and_continue(work_folder) -> None:

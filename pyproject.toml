@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "pdf-ocrer"
-version = "0.1.0"
+version = "0.2.0"
 description = "Batch OCR scanned PDFs into searchable PDFs and rename them with an OpenAI-compatible LLM."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -24,9 +24,11 @@ classifiers = [
   "Topic :: Office/Business",
 ]
 dependencies = [
+  "customtkinter>=6.0",
   "paddleocr>=3.7",
   "pymupdf>=1.26",
   "openai>=1.60,<3",
+  "tkinterdnd2>=0.5",
 ]
 
 [project.optional-dependencies]
@@ -55,4 +57,3 @@ pythonpath = ["src"]
 [tool.ruff]
 line-length = 100
 target-version = "py311"
-

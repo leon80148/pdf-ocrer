@@ -57,6 +57,7 @@ def run_batch(
     progress_cb: ProgressCb | None = None,
     log_cb: Callable[[str], None] | None = None,
     cancel_event: threading.Event | None = None,
+    file_cb: Callable[[FileResult], None] | None = None,
 ) -> BatchSummary:
     folder = Path(folder)
     output_dir = folder / cfg.output.subdir_name
@@ -125,9 +126,11 @@ def run_batch(
                     note=f"{type(exc).__name__}: {exc}",
                 )
 
-            results.append(result)
             _write_csv_row(writer, result)
             csv_file.flush()
+            results.append(result)
+            if file_cb is not None:
+                file_cb(result)
 
     return BatchSummary(results=results, csv_path=csv_path, output_dir=output_dir, cancelled=cancelled)
 

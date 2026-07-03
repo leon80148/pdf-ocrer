@@ -72,3 +72,7 @@ max_tokens = 1024
 [debug]
 # 是否顯示紅色文字層，供對位除錯。預設：false。
 visible_text = false
+
+[gui]
+# GUI 外觀模式。預設：system；可選 system/light/dark。
+appearance = "system"

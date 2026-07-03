@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 import tomllib
 import warnings
-from dataclasses import dataclass, fields
+from dataclasses import dataclass, fields, replace
 from pathlib import Path
 from typing import TypeVar
 
@@ -56,12 +56,18 @@ class DebugConfig:
 
 
 @dataclass(frozen=True)
+class GuiConfig:
+    appearance: str = "system"
+
+
+@dataclass(frozen=True)
 class AppConfig:
     ocr: OcrConfig
     output: OutputConfig
     naming: NamingConfig
     llm: LlmConfig
     debug: DebugConfig
+    gui: GuiConfig = GuiConfig()
 
 
 class ConfigError(ValueError):
@@ -88,6 +94,7 @@ def load_config(path: Path | None = None) -> AppConfig:
         "naming": NamingConfig,
         "llm": LlmConfig,
         "debug": DebugConfig,
+        "gui": GuiConfig,
     }
     section_values: dict[str, object] = {}
 
@@ -107,6 +114,7 @@ def load_config(path: Path | None = None) -> AppConfig:
             naming=_section(section_values, "naming", NamingConfig()),
             llm=_section(section_values, "llm", LlmConfig()),
             debug=_section(section_values, "debug", DebugConfig()),
+            gui=_section(section_values, "gui", GuiConfig()),
         )
     )
 
@@ -140,7 +148,7 @@ def _validate(cfg: AppConfig) -> AppConfig:
     _validate_ocr(cfg.ocr)
     _validate_naming(cfg.naming)
     _validate_llm(cfg.llm)
-    return cfg
+    return replace(cfg, gui=_validate_gui(cfg.gui))
 
 
 def _validate_ocr(cfg: OcrConfig) -> None:
@@ -188,6 +196,17 @@ def _validate_llm(cfg: LlmConfig) -> None:
     _require_int("max_tokens", cfg.max_tokens)
     if cfg.max_tokens <= 0:
         _range_error("max_tokens", "大於 0")
+
+
+def _validate_gui(cfg: GuiConfig) -> GuiConfig:
+    if not isinstance(cfg.appearance, str):
+        raise ConfigError("設定欄位 appearance 必須是 system/light/dark")
+
+    appearance = cfg.appearance.casefold()
+    if appearance not in {"system", "light", "dark"}:
+        raise ConfigError("設定欄位 appearance 必須是 system/light/dark")
+
+    return cfg if appearance == cfg.appearance else GuiConfig(appearance=appearance)
 
 
 def _require_int(field_name: str, value: object) -> None:

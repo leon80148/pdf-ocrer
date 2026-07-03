@@ -87,6 +87,15 @@ Use the explicit GUI entry point if your launcher needs it:
 pdf-ocrer-gui
 ```
 
+The GUI uses CustomTkinter for a modern flat desktop look. It shows a per-file
+status table with `原檔名`, `狀態`, `新檔名`, and `OCR頁數` columns that update as
+each file is processed. You can choose a folder with the button or drag a folder
+onto the window; if `tkinterdnd2` is unavailable, drag-and-drop is disabled
+gracefully and normal folder selection still works. The theme switcher supports
+system, light, and dark appearances, defaulting from `[gui] appearance`. The
+`完成後開啟對照表` checkbox is on by default and opens the CSV audit table when
+the batch completes.
+
 CLI flags:
 
 ```text
@@ -159,6 +168,7 @@ Important settings:
 | `[naming]` | `max_chars_to_llm = 3000` | Maximum OCR text characters sent to the naming LLM. |
 | `[llm]` | `provider = "openai_compatible"` | Default generic provider. |
 | `[llm]` | `provider = "none"` | Disable LLM naming. Files use original name plus `_OCR`. |
+| `[gui]` | `appearance = "system"` | GUI theme: `"system"`, `"light"`, or `"dark"`. |
 | `[debug]` | `visible_text = true` | Render the text layer in red for alignment checks. |
 
 See [config.example.toml](config.example.toml) for the full documented template.

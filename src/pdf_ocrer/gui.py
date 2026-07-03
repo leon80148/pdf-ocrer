@@ -7,18 +7,41 @@ import threading
 import tkinter as tk
 from collections.abc import Callable
 from pathlib import Path
-from tkinter import filedialog, messagebox, scrolledtext, ttk
+from tkinter import filedialog, messagebox, ttk
+
+import customtkinter as ctk
+
+try:
+    from tkinterdnd2 import DND_FILES, TkinterDnD
+except Exception:
+    DND_FILES = None
+    TkinterDnD = None
+    _DND_AVAILABLE = False
+else:
+    _DND_AVAILABLE = True
 
 from pdf_ocrer import __version__
 from pdf_ocrer.cli import DEFAULT_NAMING_PROMPT, _load_prompt
-from pdf_ocrer.config import ConfigError, LlmConfig, OcrConfig, load_config
+from pdf_ocrer.config import ConfigError, GuiConfig, LlmConfig, OcrConfig, load_config
 from pdf_ocrer.llm_providers import LLMClient, create_client
 from pdf_ocrer.ocr_engine import OcrEngineProtocol
-from pdf_ocrer.pipeline import BatchSummary, FileStatus, run_batch
+from pdf_ocrer.pipeline import BatchSummary, FileResult, FileStatus, run_batch
 
 EngineFactory = Callable[[OcrConfig], OcrEngineProtocol]
 ClientFactory = Callable[[LlmConfig], LLMClient | None]
 GuiEvent = tuple[object, ...]
+
+_APPEARANCE_TO_SEGMENT = {
+    "light": "淺色",
+    "dark": "深色",
+    "system": "系統",
+}
+_SEGMENT_TO_APPEARANCE = {
+    "淺色": "light",
+    "深色": "dark",
+    "系統": "system",
+}
+_TREE_COLUMNS = ("source", "status", "output", "ocr_pages")
 
 
 def run_gui(config_path: Path | None = None) -> None:
@@ -26,7 +49,110 @@ def run_gui(config_path: Path | None = None) -> None:
     app.mainloop()
 
 
-class App(tk.Tk):
+def _effective_appearance(mode: str) -> str:
+    normalized = mode.casefold()
+    if normalized == "system":
+        getter = getattr(ctk, "get_appearance_mode", None)
+        if callable(getter):
+            current = str(getter()).casefold()
+            if current in {"light", "dark"}:
+                return current
+        return "light"
+    return "dark" if normalized == "dark" else "light"
+
+
+def _style_treeview(mode: str) -> None:
+    appearance = _effective_appearance(mode)
+    if appearance == "dark":
+        background = "#242424"
+        fieldbackground = "#2b2b2b"
+        foreground = "#f2f2f2"
+        heading_background = "#333333"
+        selected_background = "#1f6aa5"
+    else:
+        background = "#f7f7f7"
+        fieldbackground = "#ffffff"
+        foreground = "#1f1f1f"
+        heading_background = "#e5e5e5"
+        selected_background = "#3b8ed0"
+
+    style = ttk.Style()
+    if "clam" in style.theme_names():
+        try:
+            style.theme_use("clam")
+        except tk.TclError:
+            pass
+    style.configure(
+        "PdfOcrer.Treeview",
+        background=background,
+        fieldbackground=fieldbackground,
+        foreground=foreground,
+        borderwidth=0,
+        rowheight=28,
+    )
+    style.map(
+        "PdfOcrer.Treeview",
+        background=[("selected", selected_background)],
+        foreground=[("selected", "#ffffff")],
+    )
+    style.configure(
+        "PdfOcrer.Treeview.Heading",
+        background=heading_background,
+        foreground=foreground,
+        relief="flat",
+    )
+    style.map("PdfOcrer.Treeview.Heading", relief=[("active", "flat")])
+
+
+def _folder_from_drop_data(data: str) -> Path | None:
+    stripped = data.strip()
+    if stripped and not stripped.startswith("{") and Path(stripped).exists():
+        return _folder_from_drop_items((stripped,))
+
+    try:
+        items = tk.Tcl().splitlist(data)
+    except tk.TclError:
+        items = _fallback_split_drop_data(data)
+    return _folder_from_drop_items(items)
+
+
+def _fallback_split_drop_data(data: str) -> tuple[str, ...]:
+    stripped = data.strip()
+    if not stripped:
+        return ()
+    if stripped.startswith("{"):
+        end = stripped.find("}")
+        if end > 0:
+            return (stripped[1:end],)
+    if Path(stripped).exists():
+        return (stripped,)
+    return (stripped.split(maxsplit=1)[0],)
+
+
+def _folder_from_drop_items(items: tuple[str, ...] | list[str]) -> Path | None:
+    if not items:
+        return None
+
+    path = Path(str(items[0]))
+    if path.is_file():
+        return path.parent
+    if path.is_dir():
+        return path
+    return None
+
+
+if _DND_AVAILABLE:
+
+    class _AppBase(ctk.CTk, TkinterDnD.DnDWrapper):  # type: ignore[union-attr]
+        pass
+
+else:
+
+    class _AppBase(ctk.CTk):
+        pass
+
+
+class App(_AppBase):
     def __init__(
         self,
         config_path: Path | None = None,
@@ -43,16 +169,26 @@ class App(tk.Tk):
         self._running = False
         self._closed = False
         self._after_id: str | None = None
+        self._file_rows: dict[str, str] = {}
+        self._dnd_enabled = False
+
+        gui_config = self._load_initial_gui_config()
+        initial_appearance = gui_config.appearance
+        ctk.set_appearance_mode(initial_appearance)
 
         self.folder_var = tk.StringVar()
         self.status_var = tk.StringVar(value="選擇資料夾後開始")
+        self.auto_csv_var = tk.BooleanVar(value=True)
 
         self.title(f"pdf-ocrer {__version__}")
-        self.minsize(720, 520)
+        self.minsize(860, 600)
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
-        self._build_widgets()
+        self._build_widgets(initial_appearance)
         self._set_running(False)
+        self._setup_drag_drop()
+        if not self._dnd_enabled:
+            self._append_log("拖放功能不可用")
         self._after_id = self.after(100, self._poll_queue)
 
     def destroy(self) -> None:
@@ -65,59 +201,135 @@ class App(tk.Tk):
             self._after_id = None
         super().destroy()
 
-    def _build_widgets(self) -> None:
-        self.columnconfigure(0, weight=1)
-        self.rowconfigure(4, weight=1)
+    def _load_initial_gui_config(self) -> GuiConfig:
+        try:
+            return load_config(self._config_path).gui
+        except ConfigError:
+            return GuiConfig()
 
-        folder_frame = ttk.Frame(self, padding=(12, 12, 12, 6))
-        folder_frame.grid(row=0, column=0, sticky="ew")
+    def _build_widgets(self, initial_appearance: str) -> None:
+        self.columnconfigure(0, weight=1)
+        self.rowconfigure(4, weight=3)
+        self.rowconfigure(5, weight=1)
+
+        folder_frame = ctk.CTkFrame(self, fg_color="transparent")
+        folder_frame.grid(row=0, column=0, sticky="ew", padx=12, pady=(12, 6))
         folder_frame.columnconfigure(0, weight=1)
 
-        self.folder_entry = ttk.Entry(folder_frame, textvariable=self.folder_var)
+        self.folder_entry = ctk.CTkEntry(folder_frame, textvariable=self.folder_var)
         self.folder_entry.grid(row=0, column=0, sticky="ew", padx=(0, 8))
 
-        self.choose_button = ttk.Button(
+        self.choose_button = ctk.CTkButton(
             folder_frame,
             text="選擇資料夾",
             command=self._choose_folder,
         )
         self.choose_button.grid(row=0, column=1)
 
-        action_frame = ttk.Frame(self, padding=(12, 0, 12, 6))
-        action_frame.grid(row=1, column=0, sticky="ew")
+        action_frame = ctk.CTkFrame(self, fg_color="transparent")
+        action_frame.grid(row=1, column=0, sticky="ew", padx=12, pady=(0, 6))
+        action_frame.columnconfigure(4, weight=1)
 
-        self.start_button = ttk.Button(action_frame, text="開始", command=self._start)
+        self.start_button = ctk.CTkButton(action_frame, text="開始", command=self._start)
         self.start_button.grid(row=0, column=0, padx=(0, 8))
 
-        self.cancel_button = ttk.Button(action_frame, text="取消", command=self._cancel)
+        self.cancel_button = ctk.CTkButton(action_frame, text="取消", command=self._cancel)
         self.cancel_button.grid(row=0, column=1, padx=(0, 8))
 
-        self.edit_prompt_button = ttk.Button(
+        self.edit_prompt_button = ctk.CTkButton(
             action_frame,
             text="編輯命名規則",
             command=self._edit_prompt,
         )
         self.edit_prompt_button.grid(row=0, column=2, padx=(16, 8))
 
-        self.edit_config_button = ttk.Button(
+        self.edit_config_button = ctk.CTkButton(
             action_frame,
             text="編輯設定",
             command=self._edit_config,
         )
         self.edit_config_button.grid(row=0, column=3)
 
-        progress_frame = ttk.Frame(self, padding=(12, 0, 12, 6))
-        progress_frame.grid(row=2, column=0, sticky="ew")
+        self.auto_csv_checkbox = ctk.CTkCheckBox(
+            action_frame,
+            text="完成後開啟對照表",
+            variable=self.auto_csv_var,
+        )
+        self.auto_csv_checkbox.grid(row=0, column=5, sticky="e", padx=(8, 16))
+
+        self.theme_segmented = ctk.CTkSegmentedButton(
+            action_frame,
+            values=["淺色", "深色", "系統"],
+            command=self._change_appearance,
+        )
+        self.theme_segmented.grid(row=0, column=6, sticky="e")
+        self.theme_segmented.set(_APPEARANCE_TO_SEGMENT.get(initial_appearance, "系統"))
+
+        progress_frame = ctk.CTkFrame(self, fg_color="transparent")
+        progress_frame.grid(row=2, column=0, sticky="ew", padx=12, pady=(0, 6))
         progress_frame.columnconfigure(0, weight=1)
 
-        self.progressbar = ttk.Progressbar(progress_frame, mode="determinate", maximum=1)
+        self.progressbar = ctk.CTkProgressBar(progress_frame)
         self.progressbar.grid(row=0, column=0, sticky="ew")
+        self.progressbar.set(0)
 
-        self.status_label = ttk.Label(self, textvariable=self.status_var, padding=(12, 0, 12, 6))
-        self.status_label.grid(row=3, column=0, sticky="ew")
+        self.status_label = ctk.CTkLabel(self, textvariable=self.status_var, anchor="w")
+        self.status_label.grid(row=3, column=0, sticky="ew", padx=12, pady=(0, 6))
 
-        self.log_text = scrolledtext.ScrolledText(self, height=16, wrap="word", state="disabled")
-        self.log_text.grid(row=4, column=0, sticky="nsew", padx=12, pady=(0, 12))
+        table_frame = ctk.CTkFrame(self, fg_color="transparent")
+        table_frame.grid(row=4, column=0, sticky="nsew", padx=12, pady=(0, 8))
+        table_frame.columnconfigure(0, weight=1)
+        table_frame.rowconfigure(0, weight=1)
+
+        _style_treeview(initial_appearance)
+        self.file_tree = ttk.Treeview(
+            table_frame,
+            columns=_TREE_COLUMNS,
+            show="headings",
+            style="PdfOcrer.Treeview",
+        )
+        self.file_tree.heading("source", text="原檔名")
+        self.file_tree.heading("status", text="狀態")
+        self.file_tree.heading("output", text="新檔名")
+        self.file_tree.heading("ocr_pages", text="OCR頁數")
+        self.file_tree.column("source", width=260, anchor="w")
+        self.file_tree.column("status", width=150, anchor="w")
+        self.file_tree.column("output", width=260, anchor="w")
+        self.file_tree.column("ocr_pages", width=90, anchor="center")
+        self.file_tree.grid(row=0, column=0, sticky="nsew")
+
+        tree_scrollbar = ttk.Scrollbar(table_frame, orient="vertical", command=self.file_tree.yview)
+        tree_scrollbar.grid(row=0, column=1, sticky="ns")
+        self.file_tree.configure(yscrollcommand=tree_scrollbar.set)
+
+        self.log_text = ctk.CTkTextbox(self, height=130, wrap="word", state="disabled")
+        self.log_text.grid(row=5, column=0, sticky="nsew", padx=12, pady=(0, 12))
+
+    def _setup_drag_drop(self) -> None:
+        if not _DND_AVAILABLE or TkinterDnD is None or DND_FILES is None:
+            return
+
+        try:
+            self.TkdndVersion = TkinterDnD._require(self)
+            self.drop_target_register(DND_FILES)
+            self.dnd_bind("<<Drop>>", self._on_drop)
+        except Exception:
+            self._dnd_enabled = False
+            return
+
+        self._dnd_enabled = True
+
+    def _on_drop(self, event: object) -> None:
+        data = getattr(event, "data", "")
+        try:
+            items = self.tk.splitlist(data)
+        except tk.TclError:
+            folder = _folder_from_drop_data(data)
+        else:
+            folder = _folder_from_drop_items(items)
+
+        if folder is not None:
+            self.folder_var.set(str(folder))
 
     def _choose_folder(self) -> None:
         selected = filedialog.askdirectory(parent=self, title="選擇 PDF 資料夾")
@@ -131,7 +343,8 @@ class App(tk.Tk):
             return
 
         self._clear_log()
-        self.progressbar.configure(maximum=1, value=0)
+        self._clear_file_rows()
+        self.progressbar.set(0)
         self.status_var.set("準備開始")
         self._cancel_event = threading.Event()
         self._set_running(True)
@@ -146,7 +359,7 @@ class App(tk.Tk):
     def _cancel(self) -> None:
         if self._cancel_event is not None:
             self._cancel_event.set()
-        self.cancel_button.state(["disabled"])
+        self.cancel_button.configure(state="disabled")
         self._append_log("正在取消處理...")
 
     def _run_worker(self, folder: Path, cancel_event: threading.Event) -> None:
@@ -171,6 +384,7 @@ class App(tk.Tk):
                 progress_cb=self._queue_progress,
                 log_cb=log_cb,
                 cancel_event=cancel_event,
+                file_cb=self._queue_file_done,
             )
         except Exception as exc:
             self._queue.put(("error", f"{type(exc).__name__}: {exc}"))
@@ -202,6 +416,9 @@ class App(tk.Tk):
     ) -> None:
         self._queue.put(("progress", file_i, file_n, page_i, page_n, name))
 
+    def _queue_file_done(self, result: FileResult) -> None:
+        self._queue.put(("file_done", result))
+
     def _poll_queue(self) -> None:
         self._drain_queue()
         if not self._closed:
@@ -222,6 +439,8 @@ class App(tk.Tk):
                 self._append_log(str(event[1]))
             elif kind == "progress":
                 self._handle_progress(event)
+            elif kind == "file_done":
+                self._handle_file_done(event[1])
             elif kind == "done":
                 self._handle_done(event[1])
             elif kind == "error":
@@ -229,8 +448,19 @@ class App(tk.Tk):
 
     def _handle_progress(self, event: GuiEvent) -> None:
         file_i, file_n, page_i, page_n, name = event[1:6]
-        self.progressbar.configure(maximum=max(1, int(file_n)), value=int(file_i))
+        denominator = int(file_n)
+        fraction = 0.0 if denominator < 1 else int(file_i) / denominator
+        self.progressbar.set(max(0.0, min(1.0, fraction)))
         self.status_var.set(f"第 {file_i}/{file_n} 檔 - 第 {page_i}/{page_n} 頁 - {name}")
+        self._upsert_file_row(str(name), "處理中", "", "")
+
+    def _handle_file_done(self, result: object) -> None:
+        if not isinstance(result, FileResult):
+            self._handle_error("GUI 收到未知的檔案完成事件。")
+            return
+
+        output_name = "" if result.output is None else result.output.name
+        self._upsert_file_row(result.source.name, result.status.value, output_name, str(result.ocr_pages))
 
     def _handle_done(self, summary: object) -> None:
         if not isinstance(summary, BatchSummary):
@@ -239,8 +469,10 @@ class App(tk.Tk):
 
         was_running = self._running
         self._set_running(False)
-        self.progressbar.configure(maximum=max(1, len(summary.results)), value=len(summary.results))
+        self.progressbar.set(1.0 if summary.results else 0.0)
         self.status_var.set("已取消" if summary.cancelled else f"完成：{len(summary.results)} 檔")
+        if self.auto_csv_var.get() and summary.csv_path is not None and summary.csv_path.exists():
+            self._open_path(summary.csv_path)
         if was_running:
             self.after(0, lambda: self._show_completion(summary))
 
@@ -255,11 +487,11 @@ class App(tk.Tk):
     def _set_running(self, running: bool) -> None:
         self._running = running
         if running:
-            self.start_button.state(["disabled"])
-            self.cancel_button.state(["!disabled"])
+            self.start_button.configure(state="disabled")
+            self.cancel_button.configure(state="normal")
         else:
-            self.start_button.state(["!disabled"])
-            self.cancel_button.state(["disabled"])
+            self.start_button.configure(state="normal")
+            self.cancel_button.configure(state="disabled")
 
     def _append_log(self, message: str) -> None:
         self.log_text.configure(state="normal")
@@ -271,6 +503,33 @@ class App(tk.Tk):
         self.log_text.configure(state="normal")
         self.log_text.delete("1.0", "end")
         self.log_text.configure(state="disabled")
+
+    def _clear_file_rows(self) -> None:
+        for iid in self.file_tree.get_children():
+            self.file_tree.delete(iid)
+        self._file_rows.clear()
+
+    def _upsert_file_row(
+        self,
+        source_name: str,
+        status: str,
+        output_name: str,
+        ocr_pages: str,
+    ) -> None:
+        iid = self._file_rows.get(source_name)
+        values = (source_name, status, output_name, ocr_pages)
+        if iid is None:
+            iid = f"file-{len(self._file_rows)}"
+            self._file_rows[source_name] = iid
+            self.file_tree.insert("", "end", iid=iid, values=values)
+            return
+
+        self.file_tree.item(iid, values=values)
+
+    def _change_appearance(self, selected: str) -> None:
+        mode = _SEGMENT_TO_APPEARANCE.get(selected, "system")
+        ctk.set_appearance_mode(mode)
+        _style_treeview(mode)
 
     def _show_completion(self, summary: BatchSummary) -> None:
         if self._closed:

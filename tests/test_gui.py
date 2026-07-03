@@ -6,16 +6,17 @@ from pathlib import Path
 import pytest
 
 tk = pytest.importorskip("tkinter")
+ctk = pytest.importorskip("customtkinter")
 
 from pdf_ocrer import __version__  # noqa: E402
-from pdf_ocrer.gui import App  # noqa: E402
-from pdf_ocrer.pipeline import BatchSummary  # noqa: E402
+from pdf_ocrer.gui import App, _folder_from_drop_data  # noqa: E402
+from pdf_ocrer.pipeline import BatchSummary, FileResult, FileStatus  # noqa: E402
 
 
 @pytest.fixture()
 def app(tmp_path: Path):
     try:
-        probe = tk.Tk()
+        probe = ctk.CTk()
     except tk.TclError:
         pytest.skip("no display")
     else:
@@ -51,22 +52,72 @@ def test_done_event_reenables_start_and_disables_cancel(app: App, tmp_path: Path
     app._queue.put(("done", summary))
     app._drain_queue()
 
-    assert "disabled" not in app.start_button.state()
-    assert "disabled" in app.cancel_button.state()
+    assert app.start_button.cget("state") == "normal"
+    assert app.cancel_button.cget("state") == "disabled"
 
 
-def test_progress_event_updates_status(app: App) -> None:
+def test_progress_event_updates_status_table_and_progressbar(app: App) -> None:
     app._queue.put(("progress", 3, 12, 5, 20, "檔名.pdf"))
     app._drain_queue()
 
     status = app.status_var.get()
     assert "檔" in status
     assert "頁" in status
+    assert app.progressbar.get() == pytest.approx(3 / 12)
+
+    rows = app.file_tree.get_children()
+    assert len(rows) == 1
+    values = app.file_tree.item(rows[0], "values")
+    assert values == ("檔名.pdf", "處理中", "", "")
+
+
+def test_file_done_event_updates_status_table(app: App, tmp_path: Path) -> None:
+    result = FileResult(
+        source=tmp_path / "原檔.pdf",
+        output=tmp_path / "新檔.pdf",
+        status=FileStatus.SUCCESS_OCR,
+        total_pages=5,
+        ocr_pages=3,
+        naming_source="llm",
+        note="",
+    )
+
+    app._queue.put(("file_done", result))
+    app._drain_queue()
+
+    rows = app.file_tree.get_children()
+    assert len(rows) == 1
+    values = app.file_tree.item(rows[0], "values")
+    assert values == ("原檔.pdf", FileStatus.SUCCESS_OCR.value, "新檔.pdf", "3")
+
+
+def test_auto_csv_checkbox_defaults_checked(app: App) -> None:
+    assert app.auto_csv_var.get() is True
+
+
+def test_theme_switch_calls_customtkinter(app: App, monkeypatch) -> None:
+    calls: list[str] = []
+    monkeypatch.setattr("pdf_ocrer.gui.ctk.set_appearance_mode", calls.append)
+
+    app._change_appearance("深色")
+
+    assert calls == ["dark"]
+
+
+def test_drop_data_uses_file_parent_and_handles_braced_spaces(tmp_path: Path) -> None:
+    folder = tmp_path / "資料 夾"
+    folder.mkdir()
+    pdf = folder / "有 空白.pdf"
+    pdf.write_bytes(b"%PDF-1.7\n")
+
+    assert _folder_from_drop_data(f"{{{pdf}}}") == folder
+    assert _folder_from_drop_data(str(folder)) == folder
 
 
 def test_worker_thread_is_not_daemon(app: App, work_folder: Path, monkeypatch) -> None:
     _keep_only(work_folder, {"native.pdf"})
     monkeypatch.setattr("pdf_ocrer.gui.messagebox.askyesno", lambda *args, **kwargs: False)
+    monkeypatch.setattr(app, "_open_path", lambda path: None)
     app.folder_var.set(str(work_folder))
 
     app._start()

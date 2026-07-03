@@ -68,6 +68,13 @@ python -m pip install "pdf-ocrer[paddle-cpu]"
 pdf-ocrer "C:\Scans"
 ```
 
+圖形介面現在使用 CustomTkinter，外觀是比較現代的扁平桌面介面。處理時會顯示檔案狀態
+表，欄位包含 `原檔名`、`狀態`、`新檔名`、`OCR頁數`，並依每個檔案即時更新。你可以按
+按鈕選資料夾，也可以把資料夾拖放到視窗上；如果系統無法使用 `tkinterdnd2`，拖放功能
+會自動關閉，仍可用一般選取資料夾方式操作。介面可切換系統、淺色、深色主題，預設值
+來自 `config.toml` 的 `[gui] appearance`。`完成後開啟對照表` 預設勾選，批次完成後會
+自動開啟 CSV 對照表。
+
 ## 命令列選項
 
 ```text
@@ -171,6 +178,13 @@ $env:PDF_OCRER_API_KEY = "..."
 | OpenRouter | `https://openrouter.ai/api/v1` | 需要 API key。 |
 
 完整設定範本請看 [config.example.toml](config.example.toml)。
+
+圖形介面主題可在設定檔中調整：
+
+```toml
+[gui]
+appearance = "system"  # 可用 "system"、"light"、"dark"
+```
 
 ## 速度與模型
 

@@ -12,6 +12,7 @@ def test_defaults_when_no_file(tmp_path):
 
     assert cfg.ocr.dpi == 200
     assert cfg.llm.provider == "openai_compatible"
+    assert cfg.gui.appearance == "system"
 
 
 def test_toml_overrides(tmp_path):
@@ -19,6 +20,21 @@ def test_toml_overrides(tmp_path):
     p.write_text("[ocr]\ndpi = 300\n", encoding="utf-8")
 
     assert load_config(p).ocr.dpi == 300
+
+
+def test_gui_appearance_loads(tmp_path):
+    p = tmp_path / "c.toml"
+    p.write_text("[gui]\nappearance = \"dark\"\n", encoding="utf-8")
+
+    assert load_config(p).gui.appearance == "dark"
+
+
+def test_invalid_gui_appearance_raises(tmp_path):
+    p = tmp_path / "c.toml"
+    p.write_text("[gui]\nappearance = \"blue\"\n", encoding="utf-8")
+
+    with pytest.raises(ConfigError, match="appearance"):
+        load_config(p)
 
 
 def test_unknown_key_warns(tmp_path, recwarn):
