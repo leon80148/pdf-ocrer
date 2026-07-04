@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import os
 import queue
-import shutil
 import threading
 import tkinter as tk
 from collections.abc import Callable
@@ -26,6 +25,7 @@ from pdf_ocrer.config import ConfigError, GuiConfig, LlmConfig, OcrConfig, load_
 from pdf_ocrer.llm_providers import LLMClient, create_client
 from pdf_ocrer.ocr_engine import OcrEngineProtocol
 from pdf_ocrer.pipeline import BatchSummary, FileResult, FileStatus, run_batch
+from pdf_ocrer.settings_dialog import SettingsDialog
 
 EngineFactory = Callable[[OcrConfig], OcrEngineProtocol]
 ClientFactory = Callable[[LlmConfig], LLMClient | None]
@@ -246,7 +246,7 @@ class App(_AppBase):
         self.edit_config_button = ctk.CTkButton(
             action_frame,
             text="編輯設定",
-            command=self._edit_config,
+            command=self._open_settings_dialog,
         )
         self.edit_config_button.grid(row=0, column=3)
 
@@ -564,15 +564,10 @@ class App(_AppBase):
             prompt_path.write_text(DEFAULT_NAMING_PROMPT, encoding="utf-8")
         self._open_path(prompt_path)
 
-    def _edit_config(self) -> None:
-        if not self._config_path.exists():
-            self._config_path.parent.mkdir(parents=True, exist_ok=True)
-            example_path = Path("config.example.toml")
-            if example_path.exists():
-                shutil.copyfile(example_path, self._config_path)
-            else:
-                self._config_path.write_text("", encoding="utf-8")
-        self._open_path(self._config_path)
+    def _open_settings_dialog(self) -> None:
+        dialog = SettingsDialog(self, self._config_path, open_path=self._open_path)
+        dialog.grab_set()
+        self.wait_window(dialog)
 
     def _open_path(self, path: Path) -> None:
         startfile = getattr(os, "startfile", None)

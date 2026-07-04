@@ -1,10 +1,36 @@
 from __future__ import annotations
 
+from dataclasses import replace
 import warnings
 
 import pytest
 
-from pdf_ocrer.config import ConfigError, LlmConfig, load_config, resolve_api_key
+from pdf_ocrer.config import (
+    CommonSettings,
+    ConfigError,
+    LlmConfig,
+    apply_common_settings,
+    ensure_config_file,
+    load_config,
+    read_common_settings,
+    resolve_api_key,
+)
+
+
+def _common_settings(**overrides: object) -> CommonSettings:
+    values = {
+        "dpi": 300,
+        "min_confidence": 0.75,
+        "det_model_name": "PP-OCRv6_mobile_det",
+        "rec_model_name": "PP-OCRv6_mobile_rec",
+        "naming_enabled": False,
+        "llm_provider": "none",
+        "llm_model": "local-model",
+        "llm_base_url": "https://example.test/v1",
+        "llm_api_key": "sk-test",
+    }
+    values.update(overrides)
+    return CommonSettings(**values)
 
 
 def test_defaults_when_no_file(tmp_path):
@@ -97,3 +123,159 @@ def test_no_warning_for_missing_file(tmp_path):
 
     assert cfg.output.subdir_name == "OCR輸出"
     assert caught == []
+
+
+def test_ensure_config_file_creates_empty_file_without_example(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    config_path = tmp_path / "nested" / "config.toml"
+
+    ensure_config_file(config_path)
+
+    assert config_path.read_text(encoding="utf-8") == ""
+
+
+def test_ensure_config_file_copies_example_when_present(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    example = tmp_path / "config.example.toml"
+    example.write_text("# template\n[ocr]\ndpi = 222\n", encoding="utf-8")
+    config_path = tmp_path / "config" / "config.toml"
+
+    ensure_config_file(config_path)
+
+    assert config_path.read_text(encoding="utf-8") == example.read_text(encoding="utf-8")
+
+
+def test_ensure_config_file_leaves_existing_file_unchanged(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    config_path = tmp_path / "config.toml"
+    original = "# existing\n[ocr]\ndpi = 240\n"
+    config_path.write_text(original, encoding="utf-8")
+
+    ensure_config_file(config_path)
+
+    assert config_path.read_text(encoding="utf-8") == original
+
+
+def test_apply_common_settings_preserves_comments_and_unrelated_keys(tmp_path):
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        "# root comment\n"
+        "\n"
+        "[ocr]\n"
+        "# dpi comment\n"
+        "dpi = 200\n"
+        "lang = \"chinese_cht\"\n"
+        "min_confidence = 0.5\n"
+        "det_model_name = \"old_det\"\n"
+        "rec_model_name = \"old_rec\"\n"
+        "\n"
+        "[naming]\n"
+        "enabled = true\n"
+        "fallback_suffix = \"_KEEP\"\n"
+        "\n"
+        "[llm]\n"
+        "provider = \"openai_compatible\"\n"
+        "base_url = \"http://localhost:11434/v1\"\n"
+        "model = \"old-model\"\n"
+        "api_key = \"\"\n"
+        "timeout_seconds = 45.0\n"
+        "\n"
+        "[debug]\n"
+        "visible_text = true\n",
+        encoding="utf-8",
+    )
+
+    settings = _common_settings()
+    apply_common_settings(config_path, settings)
+
+    text = config_path.read_text(encoding="utf-8")
+    cfg = load_config(config_path)
+    assert "# root comment" in text
+    assert "# dpi comment" in text
+    assert cfg.ocr.dpi == 300
+    assert cfg.ocr.min_confidence == 0.75
+    assert cfg.ocr.det_model_name == "PP-OCRv6_mobile_det"
+    assert cfg.ocr.rec_model_name == "PP-OCRv6_mobile_rec"
+    assert cfg.ocr.lang == "chinese_cht"
+    assert cfg.naming.enabled is False
+    assert cfg.naming.fallback_suffix == "_KEEP"
+    assert cfg.llm.provider == "none"
+    assert cfg.llm.model == "local-model"
+    assert cfg.llm.base_url == "https://example.test/v1"
+    assert cfg.llm.api_key == "sk-test"
+    assert cfg.llm.timeout_seconds == 45.0
+    assert cfg.debug.visible_text is True
+    assert read_common_settings(config_path) == settings
+
+
+def test_apply_common_settings_removes_model_keys_for_medium_defaults(tmp_path):
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        "[ocr]\n"
+        "det_model_name = \"old_det\"\n"
+        "rec_model_name = \"old_rec\"\n"
+        "\n"
+        "[naming]\n"
+        "enabled = true\n"
+        "\n"
+        "[llm]\n"
+        "provider = \"openai_compatible\"\n",
+        encoding="utf-8",
+    )
+
+    apply_common_settings(config_path, _common_settings(det_model_name=None, rec_model_name=None))
+
+    text = config_path.read_text(encoding="utf-8")
+    cfg = load_config(config_path)
+    assert "det_model_name" not in text
+    assert "rec_model_name" not in text
+    assert "null" not in text.lower()
+    assert cfg.ocr.det_model_name is None
+    assert cfg.ocr.rec_model_name is None
+
+
+def test_apply_common_settings_does_not_write_when_validation_fails(tmp_path):
+    config_path = tmp_path / "config.toml"
+    original = "[ocr]\ndpi = 200\n"
+    config_path.write_text(original, encoding="utf-8")
+    original_bytes = config_path.read_bytes()
+
+    with pytest.raises(ConfigError, match="dpi"):
+        apply_common_settings(config_path, replace(_common_settings(), dpi=9999))
+
+    assert config_path.read_bytes() == original_bytes
+
+
+def test_apply_common_settings_bootstraps_missing_file_without_example(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    config_path = tmp_path / "nested" / "config.toml"
+
+    apply_common_settings(config_path, _common_settings())
+
+    cfg = load_config(config_path)
+    assert cfg.ocr.dpi == 300
+    assert cfg.naming.enabled is False
+    assert "[ocr]" in config_path.read_text(encoding="utf-8")
+
+
+def test_apply_common_settings_bootstraps_missing_file_from_example(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    example = tmp_path / "config.example.toml"
+    example.write_text(
+        "# template comment\n"
+        "[ocr]\n"
+        "dpi = 200\n"
+        "\n"
+        "[output]\n"
+        "subdir_name = \"KEEP\"\n",
+        encoding="utf-8",
+    )
+    config_path = tmp_path / "nested" / "config.toml"
+
+    apply_common_settings(config_path, _common_settings())
+
+    text = config_path.read_text(encoding="utf-8")
+    cfg = load_config(config_path)
+    assert "# template comment" in text
+    assert cfg.ocr.dpi == 300
+    assert cfg.output.subdir_name == "KEEP"

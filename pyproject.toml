@@ -29,6 +29,7 @@ dependencies = [
   "pymupdf>=1.26",
   "openai>=1.60,<3",
   "tkinterdnd2>=0.5",
+  "tomlkit>=0.12",
 ]
 
 [project.optional-dependencies]

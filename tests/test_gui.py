@@ -114,6 +114,40 @@ def test_drop_data_uses_file_parent_and_handles_braced_spaces(tmp_path: Path) ->
     assert _folder_from_drop_data(str(folder)) == folder
 
 
+def test_open_settings_dialog_passes_config_path_and_open_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    dialogs: list[StubSettingsDialog] = []
+    waited: list[object] = []
+    app = App.__new__(App)
+    app._config_path = tmp_path / "config.toml"
+    app._open_path = lambda path: None
+    app.wait_window = waited.append  # type: ignore[method-assign]
+
+    class StubSettingsDialog:
+        def __init__(self, master: object, config_path: Path, *, open_path: object) -> None:
+            self.master = master
+            self.config_path = config_path
+            self.open_path = open_path
+            self.grabbed = False
+            dialogs.append(self)
+
+        def grab_set(self) -> None:
+            self.grabbed = True
+
+    monkeypatch.setattr("pdf_ocrer.gui.SettingsDialog", StubSettingsDialog)
+
+    app._open_settings_dialog()
+
+    assert len(dialogs) == 1
+    assert dialogs[0].master is app
+    assert dialogs[0].config_path == app._config_path
+    assert dialogs[0].open_path is app._open_path
+    assert dialogs[0].grabbed is True
+    assert waited == [dialogs[0]]
+
+
 def test_worker_thread_is_not_daemon(app: App, work_folder: Path, monkeypatch) -> None:
     _keep_only(work_folder, {"native.pdf"})
     monkeypatch.setattr("pdf_ocrer.gui.messagebox.askyesno", lambda *args, **kwargs: False)

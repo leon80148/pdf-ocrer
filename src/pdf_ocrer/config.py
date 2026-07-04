@@ -1,11 +1,16 @@
 from __future__ import annotations
 
 import os
+import shutil
 import tomllib
 import warnings
+from collections.abc import MutableMapping
 from dataclasses import dataclass, fields, replace
 from pathlib import Path
 from typing import TypeVar
+
+import tomlkit
+from tomlkit.exceptions import TOMLKitError
 
 
 @dataclass(frozen=True)
@@ -74,6 +79,19 @@ class ConfigError(ValueError):
     """Raised when TOML config values cannot be used by the application."""
 
 
+@dataclass(frozen=True)
+class CommonSettings:
+    dpi: int = 200
+    min_confidence: float = 0.5
+    det_model_name: str | None = None
+    rec_model_name: str | None = None
+    naming_enabled: bool = True
+    llm_provider: str = "openai_compatible"
+    llm_model: str = "qwen3:8b"
+    llm_base_url: str = "http://localhost:11434/v1"
+    llm_api_key: str = ""
+
+
 _T = TypeVar("_T")
 
 
@@ -119,8 +137,120 @@ def load_config(path: Path | None = None) -> AppConfig:
     )
 
 
+def ensure_config_file(path: Path) -> None:
+    config_path = Path(path)
+    if config_path.exists():
+        return
+
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    example_path = Path("config.example.toml")
+    if example_path.exists():
+        shutil.copyfile(example_path, config_path)
+        return
+
+    config_path.write_text("", encoding="utf-8")
+
+
+def read_common_settings(path: Path) -> CommonSettings:
+    cfg = load_config(path)
+    return CommonSettings(
+        dpi=cfg.ocr.dpi,
+        min_confidence=cfg.ocr.min_confidence,
+        det_model_name=cfg.ocr.det_model_name,
+        rec_model_name=cfg.ocr.rec_model_name,
+        naming_enabled=cfg.naming.enabled,
+        llm_provider=cfg.llm.provider,
+        llm_model=cfg.llm.model,
+        llm_base_url=cfg.llm.base_url,
+        llm_api_key=cfg.llm.api_key,
+    )
+
+
+def apply_common_settings(path: Path, settings: CommonSettings) -> None:
+    config_path = Path(path)
+    _validate_common_settings(settings, OcrConfig(), NamingConfig(), LlmConfig())
+
+    ensure_config_file(config_path)
+
+    try:
+        doc = tomlkit.parse(config_path.read_text(encoding="utf-8"))
+    except TOMLKitError as exc:
+        raise ConfigError(f"設定檔 TOML 格式錯誤: {exc}") from exc
+
+    current = load_config(config_path)
+    _validate_common_settings(settings, current.ocr, current.naming, current.llm)
+
+    ocr_table = _ensure_toml_table(doc, "ocr")
+    naming_table = _ensure_toml_table(doc, "naming")
+    llm_table = _ensure_toml_table(doc, "llm")
+
+    ocr_table["dpi"] = settings.dpi
+    ocr_table["min_confidence"] = settings.min_confidence
+    _set_optional_toml_value(ocr_table, "det_model_name", settings.det_model_name)
+    _set_optional_toml_value(ocr_table, "rec_model_name", settings.rec_model_name)
+    naming_table["enabled"] = settings.naming_enabled
+    llm_table["provider"] = settings.llm_provider
+    llm_table["model"] = settings.llm_model
+    llm_table["base_url"] = settings.llm_base_url
+    llm_table["api_key"] = settings.llm_api_key
+
+    config_path.write_text(tomlkit.dumps(doc), encoding="utf-8")
+
+
+def _validate_common_settings(
+    settings: CommonSettings,
+    ocr_base: OcrConfig,
+    naming_base: NamingConfig,
+    llm_base: LlmConfig,
+) -> None:
+    ocr = replace(
+        ocr_base,
+        dpi=settings.dpi,
+        min_confidence=settings.min_confidence,
+        det_model_name=settings.det_model_name,
+        rec_model_name=settings.rec_model_name,
+    )
+    naming = replace(naming_base, enabled=settings.naming_enabled)
+    llm = replace(
+        llm_base,
+        provider=settings.llm_provider,
+        model=settings.llm_model,
+        base_url=settings.llm_base_url,
+        api_key=settings.llm_api_key,
+    )
+    _validate_ocr(ocr)
+    _validate_naming(naming)
+    _validate_llm(llm)
+
+
 def resolve_api_key(cfg: LlmConfig) -> str:
     return cfg.api_key or os.environ.get("PDF_OCRER_API_KEY", "")
+
+
+def _ensure_toml_table(
+    doc: MutableMapping[str, object],
+    section_name: str,
+) -> MutableMapping[str, object]:
+    section = doc.get(section_name)
+    if section is None:
+        section = tomlkit.table()
+        doc[section_name] = section
+    if not isinstance(section, MutableMapping):
+        raise ConfigError(f"設定欄位 {section_name} 必須是 TOML 表格")
+    return section
+
+
+def _set_optional_toml_value(
+    table: MutableMapping[str, object],
+    key: str,
+    value: str | None,
+) -> None:
+    if value is None:
+        if key in table:
+            del table[key]
+        return
+
+    table[key] = value
 
 
 def _build_section(cls: type[_T], section_name: str, data: dict[str, object]) -> _T:
