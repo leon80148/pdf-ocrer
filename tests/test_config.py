@@ -14,6 +14,7 @@ from pdf_ocrer.config import (
     OcrConfig,
     OutputConfig,
     PerformanceConfig,
+    WatchConfig,
     apply_common_settings,
     ensure_config_file,
     load_config,
@@ -55,6 +56,7 @@ def test_defaults_when_no_file(tmp_path):
     assert cfg.performance == PerformanceConfig()
     assert cfg.gui.appearance == "system"
     assert cfg.logging == LoggingConfig()
+    assert cfg.watch == WatchConfig()
 
 
 @pytest.mark.parametrize(
@@ -106,6 +108,50 @@ def test_performance_workers_loads_from_toml(tmp_path):
     p.write_text("[performance]\nworkers = 0\n", encoding="utf-8")
 
     assert load_config(p).performance.workers == 0
+
+
+def test_watch_config_loads_from_toml(tmp_path):
+    p = tmp_path / "c.toml"
+    p.write_text("[watch]\npoll_seconds = 0.25\nmax_retries = 7\n", encoding="utf-8")
+
+    cfg = load_config(p)
+
+    assert cfg.watch.poll_seconds == 0.25
+    assert cfg.watch.max_retries == 7
+
+
+@pytest.mark.parametrize("poll_seconds", [0, -0.1, 3600.1])
+def test_invalid_watch_poll_seconds_range_raises(tmp_path, poll_seconds):
+    p = tmp_path / "c.toml"
+    p.write_text(f"[watch]\npoll_seconds = {poll_seconds}\n", encoding="utf-8")
+
+    with pytest.raises(ConfigError, match="poll_seconds"):
+        load_config(p)
+
+
+def test_invalid_watch_poll_seconds_type_raises(tmp_path):
+    p = tmp_path / "c.toml"
+    p.write_text('[watch]\npoll_seconds = "fast"\n', encoding="utf-8")
+
+    with pytest.raises(ConfigError, match="poll_seconds"):
+        load_config(p)
+
+
+@pytest.mark.parametrize("max_retries", [-1, 101])
+def test_invalid_watch_max_retries_range_raises(tmp_path, max_retries):
+    p = tmp_path / "c.toml"
+    p.write_text(f"[watch]\nmax_retries = {max_retries}\n", encoding="utf-8")
+
+    with pytest.raises(ConfigError, match="max_retries"):
+        load_config(p)
+
+
+def test_invalid_watch_max_retries_type_raises(tmp_path):
+    p = tmp_path / "c.toml"
+    p.write_text('[watch]\nmax_retries = "3"\n', encoding="utf-8")
+
+    with pytest.raises(ConfigError, match="max_retries"):
+        load_config(p)
 
 
 @pytest.mark.parametrize("workers", [-1, 9])

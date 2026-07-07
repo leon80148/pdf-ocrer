@@ -106,6 +106,12 @@ Run a CLI batch:
 pdf-ocrer "C:\path\to\pdf-folder"
 ```
 
+Watch a scanner drop folder continuously:
+
+```powershell
+pdf-ocrer "C:\path\to\pdf-folder" --watch
+```
+
 Use the explicit GUI entry point if your launcher needs it:
 
 ```powershell
@@ -122,6 +128,8 @@ settings window exposes OCR engine, DPI, confidence threshold, model size,
 parallel worker count, LLM naming, and common LLM connection fields. The
 `完成後開啟對照表` checkbox is on by default and opens the CSV audit table when
 the batch completes. `全部重新處理` ignores the incremental manifest for that run.
+Enable `監看模式` to keep watching the selected folder after clicking Start; in
+watch mode the force checkbox is ignored.
 
 CLI flags:
 
@@ -134,6 +142,7 @@ pdf-ocrer <folder>
   --workers N     Override parallel file workers. 0=auto, 1=sequential.
   --recursive     Scan subfolders and mirror their structure under the output folder.
   --force         Ignore the incremental manifest and reprocess every input.
+  --watch         Keep polling the folder and process stable new files.
   --version       Print the version.
 ```
 
@@ -213,6 +222,38 @@ created. Use `--force` for one run, or disable the behavior with:
 incremental = false
 ```
 
+## Watch Mode
+
+Watch mode is meant for scanner drop folders: leave pdf-ocrer running on a
+folder, and newly scanned PDFs or images are processed automatically after they
+finish landing on disk.
+
+CLI:
+
+```powershell
+pdf-ocrer "C:\Scans" --watch
+```
+
+GUI: choose the folder, enable `監看模式`, then press Start. The status line shows
+the current polling cycle and cumulative processed count. Press Stop Watch to
+end the loop; watch mode writes progress to the log instead of showing a dialog
+after every cycle.
+
+Behavior:
+
+- The folder is polled every `[watch] poll_seconds` seconds. The default is 5.
+- A file is considered ready only after two consecutive polls report the same
+  `(size, mtime)` snapshot, which avoids processing half-written scanner output.
+- Completed files are skipped through the incremental manifest after restart.
+- Failed files are retried up to `[watch] max_retries` times for the same source
+  snapshot, then frozen until the source file changes.
+- Watch mode requires `[output] incremental = true` and cannot be combined with
+  `--force`.
+- Watch mode processes each polling cycle with a single worker; `workers > 1`
+  or auto-selected parallel workers are ignored to avoid rebuilding worker
+  processes every cycle.
+- Do not run multiple watch processes on the same folder at the same time.
+
 ## Configuration
 
 Copy the example file and edit it:
@@ -235,6 +276,8 @@ Important settings:
 | `[input]` | `recursive = false` | Set true to scan subfolders and mirror them under the output folder. |
 | `[input]` | `image_extensions = ["jpg", "jpeg", "png", "tif", "tiff"]` | Image extensions accepted as inputs. Set `[]` to process PDFs only. |
 | `[performance]` | `workers = 1` | Parallel file workers. `1` is sequential and default; `0` auto-selects up to 3; `2` to `8` force a count. |
+| `[watch]` | `poll_seconds = 5.0` | Poll interval for watch mode. |
+| `[watch]` | `max_retries = 3` | Failed-file retries before freezing the same source snapshot. |
 | `[naming]` | `prompt_file = "naming_prompt.txt"` | User-editable prompt for output names. |
 | `[naming]` | `max_chars_to_llm = 3000` | Maximum OCR text characters sent to the naming LLM. |
 | `[llm]` | `provider = "openai_compatible"` | Default generic provider. |

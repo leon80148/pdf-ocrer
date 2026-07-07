@@ -17,7 +17,7 @@ from pdf_ocrer.llm_providers import LLMClient
 from pdf_ocrer.manifest import MANIFEST_NAME, FileIdentity, Manifest, ManifestEntry
 from pdf_ocrer.ocr_engine import OcrEngineProtocol
 from pdf_ocrer.pdf_processor import BatchCancelled, EncryptedPdfError, PdfResult, process_pdf
-from pdf_ocrer.scanning import scan_inputs
+from pdf_ocrer.scanning import ScanItem, scan_inputs
 
 
 class FileStatus(str, Enum):
@@ -66,6 +66,7 @@ def run_batch(
     cancel_event: threading.Event | None = None,
     file_cb: Callable[[FileResult], None] | None = None,
     force: bool = False,
+    files: list[ScanItem] | None = None,
 ) -> BatchSummary:
     workers = resolve_worker_count(cfg.performance, os.cpu_count())
     if workers > 1:
@@ -82,6 +83,7 @@ def run_batch(
             cancel_event=cancel_event,
             file_cb=file_cb,
             force=force,
+            files=files,
         )
 
     folder = Path(folder)
@@ -91,7 +93,7 @@ def run_batch(
     manifest = Manifest.load(manifest_path)
     incremental = cfg.output.incremental and not force
 
-    items = scan_inputs(folder, cfg.output.subdir_name, cfg.input)
+    items = files if files is not None else scan_inputs(folder, cfg.output.subdir_name, cfg.input)
     _logger.info("batch start folder=%s files=%d", folder, len(items))
     if not items:
         if log_cb is not None:
@@ -107,6 +109,16 @@ def run_batch(
     used_stems: dict[str, set[str]] = {}
     cancelled = False
 
+    def ensure_writer() -> csv.writer:
+        nonlocal csv_path, csv_file, writer
+        if writer is None:
+            csv_path = output_dir / f"{cfg.output.csv_prefix}_{datetime.now():%Y%m%d_%H%M%S}.csv"
+            csv_file = csv_path.open("w", encoding="utf-8-sig", newline="")
+            writer = csv.writer(csv_file)
+            writer.writerow(_CSV_HEADER)
+            csv_file.flush()
+        return writer
+
     try:
         for file_i, item in enumerate(items, start=1):
             if cancel_event is not None and cancel_event.is_set():
@@ -114,7 +126,28 @@ def run_batch(
                 break
 
             src = item.src
-            identity = FileIdentity.from_stat(src)
+            try:
+                identity = FileIdentity.from_stat(src)
+            except OSError as exc:
+                result = FileResult(
+                    source=src,
+                    output=None,
+                    status=FileStatus.FAILED,
+                    total_pages=0,
+                    ocr_pages=0,
+                    naming_source="none",
+                    note=_exception_note(exc),
+                    rel=item.rel,
+                )
+                csv_writer = ensure_writer()
+                _write_csv_row(csv_writer, result, output_dir)
+                csv_file.flush()
+                results.append(result)
+                _log_file_result(result, output_dir)
+                if file_cb is not None:
+                    file_cb(result)
+                continue
+
             previous_entry = manifest.get(item.rel) if cfg.output.incremental else None
             if incremental:
                 entry = manifest.should_skip(item.rel, identity, output_dir)
@@ -169,17 +202,12 @@ def run_batch(
                     total_pages=0,
                     ocr_pages=0,
                     naming_source="none",
-                    note=f"{type(exc).__name__}: {exc}",
+                    note=_exception_note(exc),
                     rel=item.rel,
                 )
 
-            if writer is None:
-                csv_path = output_dir / f"{cfg.output.csv_prefix}_{datetime.now():%Y%m%d_%H%M%S}.csv"
-                csv_file = csv_path.open("w", encoding="utf-8-sig", newline="")
-                writer = csv.writer(csv_file)
-                writer.writerow(_CSV_HEADER)
-                csv_file.flush()
-            _write_csv_row(writer, result, output_dir)
+            csv_writer = ensure_writer()
+            _write_csv_row(csv_writer, result, output_dir)
             csv_file.flush()
             results.append(result)
             _log_file_result(result, output_dir)
@@ -430,6 +458,10 @@ def _relative_output_name(output: Path, output_dir: Path) -> str:
         return output.relative_to(output_dir).as_posix()
     except ValueError:
         return output.name
+
+
+def _exception_note(exc: BaseException) -> str:
+    return f"{type(exc).__name__}: {exc}"
 
 
 def _log_batch_end(summary: BatchSummary) -> None:

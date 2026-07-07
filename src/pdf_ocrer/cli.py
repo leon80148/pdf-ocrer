@@ -3,16 +3,18 @@ from __future__ import annotations
 import argparse
 import logging
 import sys
+import threading
 from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
 
 from pdf_ocrer import __version__
 from pdf_ocrer.app_logging import setup_logging
-from pdf_ocrer.config import ConfigError, LlmConfig, LoggingConfig, OcrConfig, load_config
+from pdf_ocrer.config import AppConfig, ConfigError, LlmConfig, LoggingConfig, OcrConfig, load_config
 from pdf_ocrer.llm_providers import LLMClient, create_client
 from pdf_ocrer.ocr_engine import OcrEngineProtocol, create_engine
 from pdf_ocrer.pipeline import BatchSummary, FileResult, FileStatus, run_batch
+from pdf_ocrer.watcher import WatchSummary, watch_loop
 
 DEFAULT_NAMING_PROMPT = """你是診所行政檔案命名助手。根據下方 OCR 文字，輸出一個檔名（不含副檔名）。
 格式：日期_文件類型_對象
@@ -58,6 +60,10 @@ def main(
         print(f"資料夾不存在: {folder}", file=sys.stderr)
         return 2
 
+    if args.watch and args.force:
+        print("監看模式不能與 --force 併用", file=sys.stderr)
+        return 2
+
     try:
         cfg = load_config(args.config)
         setup_logging(cfg.logging)
@@ -71,6 +77,9 @@ def main(
             cfg = replace(cfg, performance=replace(cfg.performance, workers=args.workers))
         if args.recursive:
             cfg = replace(cfg, input=replace(cfg.input, recursive=True))
+        if args.watch and not cfg.output.incremental:
+            print("監看模式需要增量處理（[output] incremental = true）", file=sys.stderr)
+            return 2
 
         prompt_template = _load_prompt(Path(cfg.naming.prompt_file))
         log_cb = print
@@ -82,6 +91,20 @@ def main(
         client = None
         if cfg.naming.enabled:
             client = client_factory(cfg.llm) if client_factory is not None else create_client(cfg.llm)
+        if args.watch:
+            watch_summary = _run_watch_cli(
+                folder,
+                cfg,
+                engine,
+                client,
+                prompt_template,
+                progress_cb=_print_progress,
+                log_cb=log_cb,
+            )
+            _print_watch_summary(watch_summary)
+            if any(result.status is FileStatus.FAILED for result in watch_summary.results):
+                return 1
+            return 0
         summary = run_batch(
             folder,
             cfg,
@@ -123,6 +146,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--recursive", action="store_true", help="遞迴掃描子資料夾")
     parser.add_argument("--force", action="store_true", help="忽略增量記錄，全部重新處理")
+    parser.add_argument("--watch", action="store_true", help="持續監看資料夾並處理穩定的新檔案")
     parser.add_argument("--version", action="store_true")
     return parser
 
@@ -163,6 +187,58 @@ def _print_summary(summary: BatchSummary) -> None:
         )
     if summary.csv_path is not None:
         print(f"CSV: {summary.csv_path}")
+
+
+def _run_watch_cli(
+    folder: Path,
+    cfg: AppConfig,
+    engine: OcrEngineProtocol,
+    client: LLMClient | None,
+    prompt_template: str,
+    *,
+    progress_cb: Callable[[int, int, int, int, str], None] | None,
+    log_cb: Callable[[str], None] | None,
+) -> WatchSummary:
+    stop_event = threading.Event()
+    summaries: list[WatchSummary] = []
+    errors: list[Exception] = []
+
+    def target() -> None:
+        try:
+            summaries.append(
+                watch_loop(
+                    folder,
+                    cfg,
+                    engine,
+                    client,
+                    prompt_template,
+                    progress_cb=progress_cb,
+                    log_cb=log_cb,
+                    stop_event=stop_event,
+                )
+            )
+        except Exception as exc:  # pragma: no cover - exercised through caller behavior
+            errors.append(exc)
+
+    worker = threading.Thread(target=target, daemon=False)
+    worker.start()
+    try:
+        while worker.is_alive():
+            worker.join(0.1)
+    except KeyboardInterrupt:
+        stop_event.set()
+        worker.join()
+
+    if errors:
+        raise errors[0]
+    if summaries:
+        return summaries[0]
+    return WatchSummary(cycles=0, total_processed=0, results=[])
+
+
+def _print_watch_summary(summary: WatchSummary) -> None:
+    print(f"監看輪數\t{summary.cycles}")
+    print(f"累計處理檔案\t{summary.total_processed}")
 
 
 def _summary_output_name(result: FileResult, output_dir: Path) -> str:

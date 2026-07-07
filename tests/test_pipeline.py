@@ -29,6 +29,7 @@ from pdf_ocrer.manifest import MANIFEST_NAME
 from pdf_ocrer.ocr_engine import OcrLine
 from pdf_ocrer.pdf_processor import PageReport, PdfResult
 from pdf_ocrer.pipeline import FileResult, FileStatus, _text_for_naming, run_batch
+from pdf_ocrer.scanning import ScanItem
 
 _DPI = 200
 _FONT = pymupdf.Font("cjk")
@@ -372,6 +373,87 @@ def test_run_batch_recursive_mirrors_outputs_csv_rel_and_per_dir_collision(
     assert [row[1] for row in rows[1:]] == ["alpha/a_OCR.pdf", "beta/a_OCR.pdf"]
 
 
+def test_run_batch_explicit_files_skips_scan_and_preserves_list_order(
+    work_folder: Path,
+    fixtures_dir: Path,
+    monkeypatch,
+) -> None:
+    _keep_only(work_folder, set())
+    (work_folder / "drop" / "nested").mkdir(parents=True)
+    shutil.copy2(fixtures_dir / "native.pdf", work_folder / "drop" / "picked.pdf")
+    shutil.copy2(fixtures_dir / "native.pdf", work_folder / "drop" / "nested" / "second.pdf")
+    shutil.copy2(fixtures_dir / "native.pdf", work_folder / "outside.pdf")
+    files = [
+        ScanItem(work_folder / "drop" / "nested" / "second.pdf", "drop/nested/second.pdf"),
+        ScanItem(work_folder / "drop" / "picked.pdf", "drop/picked.pdf"),
+    ]
+
+    def fail_scan(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
+        raise AssertionError("scan_inputs should not be called when files are supplied")
+
+    monkeypatch.setattr("pdf_ocrer.pipeline.scan_inputs", fail_scan)
+    cfg = make_cfg(input=InputConfig(recursive=True), naming=NamingConfig(enabled=False))
+
+    summary = run_batch(work_folder, cfg, FakeEngine(), None, _PROMPT, files=files)
+
+    assert summary.cancelled is False
+    assert [result.rel for result in summary.results] == [
+        "drop/nested/second.pdf",
+        "drop/picked.pdf",
+    ]
+    assert [result.status for result in summary.results] == [
+        FileStatus.SUCCESS_EXISTING_TEXT,
+        FileStatus.SUCCESS_EXISTING_TEXT,
+    ]
+    assert (summary.output_dir / "drop" / "nested" / "second_OCR.pdf").exists()
+    assert (summary.output_dir / "drop" / "picked_OCR.pdf").exists()
+    assert not (summary.output_dir / "outside_OCR.pdf").exists()
+    assert summary.csv_path is not None
+    rows = _read_csv(summary.csv_path)
+    assert [row[0] for row in rows[1:]] == ["drop/nested/second.pdf", "drop/picked.pdf"]
+    assert [row[1] for row in rows[1:]] == [
+        "drop/nested/second_OCR.pdf",
+        "drop/picked_OCR.pdf",
+    ]
+
+
+def test_run_batch_missing_explicit_file_fails_and_continues(work_folder: Path) -> None:
+    _keep_only(work_folder, {"native.pdf"})
+    missing = work_folder / "missing.pdf"
+    files = [
+        ScanItem(missing, "missing.pdf"),
+        ScanItem(work_folder / "native.pdf", "native.pdf"),
+    ]
+
+    summary = run_batch(
+        work_folder,
+        make_cfg(naming=NamingConfig(enabled=False)),
+        FakeEngine(),
+        None,
+        _PROMPT,
+        files=files,
+    )
+
+    assert summary.cancelled is False
+    assert [result.rel for result in summary.results] == ["missing.pdf", "native.pdf"]
+    assert [result.status for result in summary.results] == [
+        FileStatus.FAILED,
+        FileStatus.SUCCESS_EXISTING_TEXT,
+    ]
+    assert "FileNotFoundError" in summary.results[0].note
+    assert summary.results[1].output == summary.output_dir / "native_OCR.pdf"
+    assert summary.csv_path is not None
+    rows = _read_csv(summary.csv_path)
+    assert [row[0] for row in rows[1:]] == ["missing.pdf", "native.pdf"]
+    assert [row[2] for row in rows[1:]] == [
+        FileStatus.FAILED.value,
+        FileStatus.SUCCESS_EXISTING_TEXT.value,
+    ]
+    manifest = json.loads((summary.output_dir / MANIFEST_NAME).read_text(encoding="utf-8"))
+    assert "missing.pdf" not in manifest["entries"]
+    assert manifest["entries"]["native.pdf"]["output"] == "native_OCR.pdf"
+
+
 def test_run_batch_recursive_incremental_second_run_skips_nested_outputs(
     work_folder: Path,
     fixtures_dir: Path,
@@ -599,6 +681,7 @@ def test_run_batch_workers_gt_one_delegates_to_parallel(tmp_path, monkeypatch) -
     cfg = make_cfg(performance=PerformanceConfig(workers=2))
     expected = object()
     calls: list[tuple[object, ...]] = []
+    files = [ScanItem(tmp_path / "picked.pdf", "picked.pdf")]
 
     def fake_run_batch_parallel(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
         calls.append((args, kwargs))
@@ -615,12 +698,14 @@ def test_run_batch_workers_gt_one_delegates_to_parallel(tmp_path, monkeypatch) -
         client,
         _PROMPT,
         force=True,
+        files=files,
     )
 
     assert summary is expected
     args, kwargs = calls[0]
     assert args[:5] == (tmp_path, cfg, engine, client, _PROMPT)
     assert kwargs["force"] is True
+    assert kwargs["files"] is files
 
 
 def test_text_for_naming_uses_page_texts_before_joining_page_breaks() -> None:

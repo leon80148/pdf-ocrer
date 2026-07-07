@@ -26,6 +26,7 @@ from pdf_ocrer.config import (
 from pdf_ocrer.manifest import MANIFEST_NAME, FileIdentity, Manifest
 from pdf_ocrer.parallel import _drain_events_until_quiet, _handle_event, run_batch_parallel
 from pdf_ocrer.pipeline import FileResult, FileStatus
+from pdf_ocrer.scanning import ScanItem
 from pdf_ocrer.worker import WorkerOutcome, WorkerTask
 
 _CSV_HEADER = ["原檔名", "新檔名", "狀態", "總頁數", "OCR頁數", "命名來源", "備註"]
@@ -126,6 +127,100 @@ def test_parallel_finalizes_csv_collision_txt_and_manifest_in_scan_order(tmp_pat
     manifest = json.loads((summary.output_dir / MANIFEST_NAME).read_text(encoding="utf-8"))
     assert manifest["entries"]["a.pdf"]["output"] == "Report.pdf"
     assert manifest["entries"]["b.pdf"]["output"] == "Report_2.pdf"
+
+
+def test_parallel_explicit_files_skips_scan_and_processes_only_list(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    source = tmp_path / "drop" / "nested" / "picked.pdf"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"picked")
+    (tmp_path / "outside.pdf").write_bytes(b"outside")
+    files = [ScanItem(source, "drop/nested/picked.pdf")]
+    submitted: list[tuple[str, int]] = []
+
+    def fail_scan(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
+        raise AssertionError("scan_inputs should not be called when files are supplied")
+
+    def worker_fn(task: WorkerTask) -> WorkerOutcome:
+        submitted.append((task.rel, task.total_files))
+        Path(task.temp_output).write_bytes(b"pdf for picked")
+        return _ok_outcome(task, ["text for picked"], ocr_pages=1)
+
+    monkeypatch.setattr("pdf_ocrer.parallel.scan_inputs", fail_scan)
+
+    summary = run_batch_parallel(
+        tmp_path,
+        make_cfg(naming=NamingConfig(enabled=False)),
+        None,
+        None,
+        _PROMPT,
+        files=files,
+        executor_factory=lambda: ThreadPoolExecutor(max_workers=1),
+        worker_fn=worker_fn,
+        warmup_fn=lambda: "fake",
+        events_queue=queue.Queue(),
+        worker_cancel=threading.Event(),
+    )
+
+    assert submitted == [("drop/nested/picked.pdf", 1)]
+    assert [result.rel for result in summary.results] == ["drop/nested/picked.pdf"]
+    assert summary.results[0].status is FileStatus.SUCCESS_OCR
+    assert summary.results[0].output == summary.output_dir / "drop" / "nested" / "picked_OCR.pdf"
+    assert summary.results[0].output.read_bytes() == b"pdf for picked"
+    assert not (summary.output_dir / "outside_OCR.pdf").exists()
+    assert summary.csv_path is not None
+    rows = _read_csv(summary.csv_path)
+    assert [row[0] for row in rows[1:]] == ["drop/nested/picked.pdf"]
+
+
+def test_parallel_missing_explicit_file_fails_and_continues(tmp_path: Path) -> None:
+    present = tmp_path / "present.pdf"
+    present.write_bytes(b"present")
+    files = [
+        ScanItem(tmp_path / "missing.pdf", "missing.pdf"),
+        ScanItem(present, "present.pdf"),
+    ]
+    submitted: list[str] = []
+
+    def worker_fn(task: WorkerTask) -> WorkerOutcome:
+        submitted.append(task.rel)
+        Path(task.temp_output).write_bytes(b"pdf for present")
+        return _ok_outcome(task, ["text for present"], ocr_pages=1)
+
+    summary = run_batch_parallel(
+        tmp_path,
+        make_cfg(naming=NamingConfig(enabled=False)),
+        None,
+        None,
+        _PROMPT,
+        files=files,
+        executor_factory=lambda: ThreadPoolExecutor(max_workers=1),
+        worker_fn=worker_fn,
+        warmup_fn=lambda: "fake",
+        events_queue=queue.Queue(),
+        worker_cancel=threading.Event(),
+    )
+
+    assert submitted == ["present.pdf"]
+    assert [result.rel for result in summary.results] == ["missing.pdf", "present.pdf"]
+    assert [result.status for result in summary.results] == [
+        FileStatus.FAILED,
+        FileStatus.SUCCESS_OCR,
+    ]
+    assert "FileNotFoundError" in summary.results[0].note
+    assert summary.results[1].output == summary.output_dir / "present_OCR.pdf"
+    assert summary.csv_path is not None
+    rows = _read_csv(summary.csv_path)
+    assert [row[0] for row in rows[1:]] == ["missing.pdf", "present.pdf"]
+    assert [row[2] for row in rows[1:]] == [
+        FileStatus.FAILED.value,
+        FileStatus.SUCCESS_OCR.value,
+    ]
+    manifest = json.loads((summary.output_dir / MANIFEST_NAME).read_text(encoding="utf-8"))
+    assert "missing.pdf" not in manifest["entries"]
+    assert manifest["entries"]["present.pdf"]["output"] == "present_OCR.pdf"
 
 
 def test_parallel_cancel_uses_fallback_for_completed_and_cleans_pending_temps(

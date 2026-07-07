@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import sys
+import threading
 import tomllib
 import types
 from pathlib import Path
@@ -14,6 +15,7 @@ from pdf_ocrer.cli import main
 from pdf_ocrer.config import ConfigError
 from pdf_ocrer.ocr_engine import OcrLine
 from pdf_ocrer.pipeline import BatchSummary, FileResult, FileStatus
+from pdf_ocrer.watcher import WatchSummary
 
 _DPI = 200
 _FONT = pymupdf.Font("cjk")
@@ -250,6 +252,128 @@ def test_main_force_flag_passes_to_run_batch(tmp_path, monkeypatch) -> None:
 
     assert exit_code == 0
     assert captured == {"force": True}
+
+
+def test_main_watch_rejects_incremental_false(tmp_path, capsys) -> None:
+    folder = tmp_path / "input"
+    folder.mkdir()
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        "[output]\n"
+        "incremental = false\n"
+        "[naming]\n"
+        "enabled = false\n",
+        encoding="utf-8",
+    )
+
+    def engine_factory(ocr_cfg):  # noqa: ANN001
+        raise AssertionError("engine should not be created for invalid watch config")
+
+    exit_code = main(
+        [str(folder), "--config", str(config_path), "--watch"],
+        engine_factory=engine_factory,
+        client_factory=lambda llm_cfg: None,
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == 2
+    assert "監看模式需要增量處理" in captured.err
+
+
+def test_main_watch_rejects_force_flag(tmp_path, capsys) -> None:
+    folder = tmp_path / "input"
+    folder.mkdir()
+
+    exit_code = main([str(folder), "--watch", "--force"])
+
+    captured = capsys.readouterr()
+    assert exit_code == 2
+    assert "監看模式不能與 --force 併用" in captured.err
+
+
+def test_main_watch_runs_watch_loop_and_prints_summary(
+    tmp_path,
+    monkeypatch,
+    capsys,
+) -> None:
+    folder = tmp_path / "input"
+    folder.mkdir()
+    config_path = tmp_path / "config.toml"
+    config_path.write_text("[naming]\nenabled = false\n", encoding="utf-8")
+    captured: dict[str, object] = {}
+
+    def fake_watch_loop(folder_arg, cfg, engine, client, prompt_template, **kwargs):  # noqa: ANN001, ANN003
+        captured["folder"] = folder_arg
+        captured["engine"] = engine
+        captured["client"] = client
+        captured["incremental"] = cfg.output.incremental
+        captured["stop_event"] = kwargs["stop_event"]
+        captured["progress_cb"] = kwargs["progress_cb"]
+        captured["log_cb"] = kwargs["log_cb"]
+        return WatchSummary(cycles=3, total_processed=2, results=[])
+
+    monkeypatch.setattr("pdf_ocrer.cli.watch_loop", fake_watch_loop)
+
+    engine = object()
+    exit_code = main(
+        [str(folder), "--config", str(config_path), "--watch"],
+        engine_factory=lambda ocr_cfg: engine,
+        client_factory=lambda llm_cfg: None,
+    )
+
+    stdout = capsys.readouterr().out
+    assert exit_code == 0
+    assert captured["folder"] == folder
+    assert captured["engine"] is engine
+    assert captured["client"] is None
+    assert captured["incremental"] is True
+    assert isinstance(captured["stop_event"], threading.Event)
+    assert captured["progress_cb"] is not None
+    assert captured["log_cb"] is print
+    assert "監看輪數\t3" in stdout
+    assert "累計處理檔案\t2" in stdout
+
+
+def test_main_watch_failed_results_return_one(
+    tmp_path,
+    monkeypatch,
+    capsys,
+) -> None:
+    folder = tmp_path / "input"
+    folder.mkdir()
+    config_path = tmp_path / "config.toml"
+    config_path.write_text("[naming]\nenabled = false\n", encoding="utf-8")
+
+    def fake_watch_loop(folder_arg, cfg, engine, client, prompt_template, **kwargs):  # noqa: ANN001, ANN003
+        return WatchSummary(
+            cycles=1,
+            total_processed=1,
+            results=[
+                FileResult(
+                    source=folder_arg / "failed.pdf",
+                    output=None,
+                    status=FileStatus.FAILED,
+                    total_pages=0,
+                    ocr_pages=0,
+                    naming_source="none",
+                    note="boom",
+                    rel="failed.pdf",
+                )
+            ],
+        )
+
+    monkeypatch.setattr("pdf_ocrer.cli.watch_loop", fake_watch_loop)
+
+    exit_code = main(
+        [str(folder), "--config", str(config_path), "--watch"],
+        engine_factory=lambda ocr_cfg: FakeEngine(),
+        client_factory=lambda llm_cfg: None,
+    )
+
+    stdout = capsys.readouterr().out
+    assert exit_code == 1
+    assert "監看輪數\t1" in stdout
+    assert "累計處理檔案\t1" in stdout
 
 
 def test_main_all_incremental_skipped_returns_zero_and_omits_csv_line(

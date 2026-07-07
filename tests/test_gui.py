@@ -14,6 +14,7 @@ from pdf_ocrer import __version__  # noqa: E402
 from pdf_ocrer.config import OcrConfig  # noqa: E402
 from pdf_ocrer.gui import App, _folder_from_drop_data  # noqa: E402
 from pdf_ocrer.pipeline import BatchSummary, FileResult, FileStatus  # noqa: E402
+from pdf_ocrer.watcher import WatchSummary  # noqa: E402
 
 
 @pytest.fixture()
@@ -137,6 +138,10 @@ def test_force_checkbox_defaults_unchecked(app: App) -> None:
     assert app.force_var.get() is False
 
 
+def test_watch_checkbox_defaults_unchecked(app: App) -> None:
+    assert app.watch_var.get() is False
+
+
 def test_theme_switch_calls_customtkinter(app: App, monkeypatch) -> None:
     calls: list[str] = []
     monkeypatch.setattr("pdf_ocrer.gui.ctk.set_appearance_mode", calls.append)
@@ -238,6 +243,113 @@ def test_worker_passes_force_checkbox_to_run_batch(
 
     assert captured == {"force": True}
     assert app._queue.get_nowait()[0] == "done"
+
+
+def test_worker_watch_mode_uses_watch_loop_and_ignores_force(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    folder = tmp_path / "input"
+    folder.mkdir()
+    config_path = tmp_path / "config.toml"
+    config_path.write_text("[naming]\nenabled = false\n", encoding="utf-8")
+    captured: dict[str, object] = {}
+    stop_event = threading.Event()
+    app = App.__new__(App)
+    app._config_path = config_path
+    app._queue = queue.Queue()
+    app._client_factory = None
+    app.force_var = _StaticBool(True)
+    app.watch_var = _StaticBool(True)
+    app._create_engine = lambda cfg, log_cb: object()  # type: ignore[method-assign]
+
+    def fake_run_batch(*args, **kwargs):  # noqa: ANN002, ANN003
+        raise AssertionError("run_batch should not be used in watch mode")
+
+    def fake_watch_loop(folder_arg, cfg, engine, client, prompt_template, **kwargs):  # noqa: ANN001, ANN003
+        captured["folder"] = folder_arg
+        captured["incremental"] = cfg.output.incremental
+        captured["client"] = client
+        captured["stop_event"] = kwargs["stop_event"]
+        captured["force"] = kwargs.get("force")
+        kwargs["cycle_cb"](2, 0, 5)
+        return WatchSummary(cycles=2, total_processed=5, results=[])
+
+    monkeypatch.setattr("pdf_ocrer.gui.run_batch", fake_run_batch)
+    monkeypatch.setattr("pdf_ocrer.gui.watch_loop", fake_watch_loop)
+
+    app._run_worker(folder, stop_event, force=True, watch=True)
+
+    assert captured["folder"] == folder
+    assert captured["incremental"] is True
+    assert captured["client"] is None
+    assert captured["stop_event"] is stop_event
+    assert captured["force"] is None
+    assert app._queue.get_nowait() == ("watch_cycle", 2, 0, 5)
+    done = app._queue.get_nowait()
+    assert done[0] == "watch_done"
+    assert isinstance(done[1], WatchSummary)
+
+
+def test_worker_watch_incremental_check_runs_before_engine_creation(tmp_path: Path) -> None:
+    folder = tmp_path / "input"
+    folder.mkdir()
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        "[output]\n"
+        "incremental = false\n"
+        "[naming]\n"
+        "enabled = false\n",
+        encoding="utf-8",
+    )
+    engine_called: list[bool] = []
+    app = App.__new__(App)
+    app._config_path = config_path
+    app._queue = queue.Queue()
+    app._client_factory = None
+    app._create_engine = lambda cfg, log_cb: engine_called.append(True) or object()  # type: ignore[method-assign]
+
+    app._run_worker(folder, threading.Event(), force=False, watch=True)
+
+    assert engine_called == []
+    event = app._queue.get_nowait()
+    assert event[0] == "error"
+    assert "監看模式需要增量處理" in event[1]
+
+
+def test_sync_mode_controls_clears_force_when_watch_selected() -> None:
+    app = App.__new__(App)
+    app._running = False
+    app.force_var = _MutableBool(True)
+    app.watch_var = _MutableBool(True)
+    app.force_checkbox = _StubWidget()
+    app.watch_checkbox = _StubWidget()
+
+    app._sync_mode_controls()
+
+    assert app.force_var.get() is False
+    assert app.force_checkbox.options["state"] == "disabled"
+    assert app.watch_checkbox.options["state"] == "normal"
+
+
+def test_watch_cycle_event_updates_status(app: App) -> None:
+    app._queue.put(("watch_cycle", 3, 0, 5))
+    app._drain_queue()
+
+    assert app.status_var.get() == "監看中（第 3 輪，累計處理 5 檔）"
+
+
+def test_watch_done_event_reenables_buttons_and_logs_summary(app: App) -> None:
+    app._watch_running = True
+    app._set_running(True)
+
+    app._queue.put(("watch_done", WatchSummary(cycles=4, total_processed=6, results=[])))
+    app._drain_queue()
+
+    assert app.start_button.cget("state") == "normal"
+    assert app.cancel_button.cget("state") == "disabled"
+    assert app.status_var.get() == "監看已停止：4 輪，累計處理 6 檔"
+    assert "監看已停止：4 輪，累計處理 6 檔" in app.log_text.get("1.0", "end")
 
 
 def test_completion_message_includes_incremental_skip_count(tmp_path: Path) -> None:
@@ -356,3 +468,22 @@ class _StaticBool:
 
     def get(self) -> bool:
         return self._value
+
+
+class _MutableBool:
+    def __init__(self, value: bool) -> None:
+        self._value = value
+
+    def get(self) -> bool:
+        return self._value
+
+    def set(self, value: bool) -> None:
+        self._value = value
+
+
+class _StubWidget:
+    def __init__(self) -> None:
+        self.options: dict[str, object] = {}
+
+    def configure(self, **kwargs: object) -> None:
+        self.options.update(kwargs)

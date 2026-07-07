@@ -36,7 +36,7 @@ from pdf_ocrer.pipeline import (
     _write_csv_row,
     _write_txt_export,
 )
-from pdf_ocrer.scanning import scan_inputs
+from pdf_ocrer.scanning import ScanItem, scan_inputs
 from pdf_ocrer.worker import WorkerOutcome, WorkerTask
 
 _logger = logging.getLogger(__name__)
@@ -65,6 +65,7 @@ def run_batch_parallel(
     cancel_event: Any | None = None,
     file_cb: Callable[[FileResult], None] | None = None,
     force: bool = False,
+    files: list[ScanItem] | None = None,
     *,
     executor_factory: Callable[[], Executor] | None = None,
     worker_fn: Callable[[WorkerTask], WorkerOutcome] | None = None,
@@ -87,7 +88,7 @@ def run_batch_parallel(
     incremental = cfg.output.incremental and not force
     cpu_count = os.cpu_count()
     workers = resolve_worker_count(cfg.performance, cpu_count)
-    items = scan_inputs(folder, cfg.output.subdir_name, cfg.input)
+    items = files if files is not None else scan_inputs(folder, cfg.output.subdir_name, cfg.input)
     total_files = len(items)
     _logger.info("parallel batch start folder=%s files=%d workers=%d", folder, total_files, workers)
     _cleanup_stale_temps(output_dir)
@@ -150,7 +151,26 @@ def run_batch_parallel(
                 cancelled = True
                 break
 
-            identity = FileIdentity.from_stat(item.src)
+            try:
+                identity = FileIdentity.from_stat(item.src)
+            except OSError as exc:
+                emit_result(
+                    index,
+                    FileResult(
+                        source=item.src,
+                        output=None,
+                        status=FileStatus.FAILED,
+                        total_pages=0,
+                        ocr_pages=0,
+                        naming_source="none",
+                        note=_exception_note(exc),
+                        rel=item.rel,
+                    ),
+                    write_csv=True,
+                    record_manifest=False,
+                )
+                continue
+
             previous_entry = manifest.get(item.rel) if cfg.output.incremental else None
             if incremental:
                 entry = manifest.should_skip(item.rel, identity, output_dir)

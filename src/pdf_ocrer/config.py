@@ -50,6 +50,12 @@ class PerformanceConfig:
 
 
 @dataclass(frozen=True)
+class WatchConfig:
+    poll_seconds: float = 5.0
+    max_retries: int = 3
+
+
+@dataclass(frozen=True)
 class NamingConfig:
     enabled: bool = True
     rename_files_with_text: bool = True
@@ -99,6 +105,7 @@ class AppConfig:
     performance: PerformanceConfig = PerformanceConfig()
     gui: GuiConfig = GuiConfig()
     logging: LoggingConfig = LoggingConfig()
+    watch: WatchConfig = WatchConfig()
 
 
 class ConfigError(ValueError):
@@ -139,6 +146,7 @@ def load_config(path: Path | None = None) -> AppConfig:
         "output": OutputConfig,
         "input": InputConfig,
         "performance": PerformanceConfig,
+        "watch": WatchConfig,
         "naming": NamingConfig,
         "llm": LlmConfig,
         "debug": DebugConfig,
@@ -167,6 +175,7 @@ def load_config(path: Path | None = None) -> AppConfig:
             performance=_section(section_values, "performance", PerformanceConfig()),
             gui=_section(section_values, "gui", GuiConfig()),
             logging=_section(section_values, "logging", LoggingConfig()),
+            watch=_section(section_values, "watch", WatchConfig()),
         )
     )
 
@@ -345,6 +354,7 @@ def _validate(cfg: AppConfig) -> AppConfig:
         performance=_validate_performance(cfg.performance),
         gui=_validate_gui(cfg.gui),
         logging=_validate_logging(cfg.logging),
+        watch=_validate_watch(cfg.watch),
     )
 
 
@@ -399,6 +409,18 @@ def _validate_performance(cfg: PerformanceConfig) -> PerformanceConfig:
     _require_int("workers", cfg.workers)
     if not 0 <= cfg.workers <= 8:
         _range_error("workers", "0–8")
+    return cfg
+
+
+def _validate_watch(cfg: WatchConfig) -> WatchConfig:
+    _require_number("poll_seconds", cfg.poll_seconds)
+    if not 0 < cfg.poll_seconds <= 3600:
+        _range_error("poll_seconds", "大於 0 且不超過 3600")
+
+    _require_int("max_retries", cfg.max_retries)
+    if not 0 <= cfg.max_retries <= 100:
+        _range_error("max_retries", "0–100")
+
     return cfg
 
 

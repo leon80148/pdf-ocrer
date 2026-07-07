@@ -28,6 +28,7 @@ from pdf_ocrer.llm_providers import LLMClient, create_client
 from pdf_ocrer.ocr_engine import OcrEngineProtocol, create_engine
 from pdf_ocrer.pipeline import BatchSummary, FileResult, FileStatus, run_batch
 from pdf_ocrer.settings_dialog import SettingsDialog
+from pdf_ocrer.watcher import WatchSummary, watch_loop
 
 EngineFactory = Callable[[OcrConfig], OcrEngineProtocol]
 ClientFactory = Callable[[LlmConfig], LLMClient | None]
@@ -170,6 +171,7 @@ class App(_AppBase):
         self._cancel_event: threading.Event | None = None
         self._worker: threading.Thread | None = None
         self._running = False
+        self._watch_running = False
         self._closed = False
         self._after_id: str | None = None
         self._file_rows: dict[str, str] = {}
@@ -183,6 +185,7 @@ class App(_AppBase):
         self.status_var = tk.StringVar(value="選擇資料夾後開始")
         self.auto_csv_var = tk.BooleanVar(value=True)
         self.force_var = tk.BooleanVar(value=False)
+        self.watch_var = tk.BooleanVar(value=False)
 
         self.title(f"pdf-ocrer {__version__}")
         self.minsize(860, 600)
@@ -236,7 +239,7 @@ class App(_AppBase):
 
         action_frame = ctk.CTkFrame(self, fg_color="transparent")
         action_frame.grid(row=1, column=0, sticky="ew", padx=12, pady=(0, 6))
-        action_frame.columnconfigure(5, weight=1)
+        action_frame.columnconfigure(6, weight=1)
 
         self.start_button = ctk.CTkButton(action_frame, text="開始", command=self._start)
         self.start_button.grid(row=0, column=0, padx=(0, 8))
@@ -248,36 +251,44 @@ class App(_AppBase):
         )
         self.force_checkbox.grid(row=0, column=1, padx=(0, 8))
 
+        self.watch_checkbox = ctk.CTkCheckBox(
+            action_frame,
+            text="監看模式",
+            variable=self.watch_var,
+            command=self._toggle_watch_mode,
+        )
+        self.watch_checkbox.grid(row=0, column=2, padx=(0, 8))
+
         self.cancel_button = ctk.CTkButton(action_frame, text="取消", command=self._cancel)
-        self.cancel_button.grid(row=0, column=2, padx=(0, 8))
+        self.cancel_button.grid(row=0, column=3, padx=(0, 8))
 
         self.edit_prompt_button = ctk.CTkButton(
             action_frame,
             text="編輯命名規則",
             command=self._edit_prompt,
         )
-        self.edit_prompt_button.grid(row=0, column=3, padx=(16, 8))
+        self.edit_prompt_button.grid(row=0, column=4, padx=(16, 8))
 
         self.edit_config_button = ctk.CTkButton(
             action_frame,
             text="編輯設定",
             command=self._open_settings_dialog,
         )
-        self.edit_config_button.grid(row=0, column=4)
+        self.edit_config_button.grid(row=0, column=5)
 
         self.auto_csv_checkbox = ctk.CTkCheckBox(
             action_frame,
             text="完成後開啟對照表",
             variable=self.auto_csv_var,
         )
-        self.auto_csv_checkbox.grid(row=0, column=6, sticky="e", padx=(8, 16))
+        self.auto_csv_checkbox.grid(row=0, column=7, sticky="e", padx=(8, 16))
 
         self.theme_segmented = ctk.CTkSegmentedButton(
             action_frame,
             values=["淺色", "深色", "系統"],
             command=self._change_appearance,
         )
-        self.theme_segmented.grid(row=0, column=7, sticky="e")
+        self.theme_segmented.grid(row=0, column=8, sticky="e")
         self.theme_segmented.set(_APPEARANCE_TO_SEGMENT.get(initial_appearance, "系統"))
 
         progress_frame = ctk.CTkFrame(self, fg_color="transparent")
@@ -362,11 +373,14 @@ class App(_AppBase):
         self.progressbar.set(0)
         self.status_var.set("準備開始")
         self._cancel_event = threading.Event()
+        watch = bool(self.watch_var.get())
+        force = False if watch else bool(self.force_var.get())
+        self._watch_running = watch
         self._set_running(True)
 
         self._worker = threading.Thread(
             target=self._run_worker,
-            args=(folder, self._cancel_event, bool(self.force_var.get())),
+            args=(folder, self._cancel_event, force, watch),
             daemon=False,
         )
         self._worker.start()
@@ -375,19 +389,25 @@ class App(_AppBase):
         if self._cancel_event is not None:
             self._cancel_event.set()
         self.cancel_button.configure(state="disabled")
-        self._append_log("正在取消處理...")
+        message = "正在停止監看..." if self._watch_running else "正在取消處理..."
+        self._append_log(message)
 
     def _run_worker(
         self,
         folder: Path,
         cancel_event: threading.Event,
         force: bool | None = None,
+        watch: bool | None = None,
     ) -> None:
         try:
             cfg = load_config(self._config_path)
             setup_logging(cfg.logging)
             log_cb = self._queue_log
-            force = bool(self.force_var.get()) if force is None else force
+            watch = self._bool_var("watch_var", False) if watch is None else watch
+            force = self._bool_var("force_var", False) if force is None else force
+            force = False if watch else force
+            if watch and not cfg.output.incremental:
+                raise ConfigError("監看模式需要增量處理（[output] incremental = true）")
             prompt_template = _load_prompt(Path(cfg.naming.prompt_file))
             engine = self._create_engine(cfg.ocr, log_cb)
             client = None
@@ -397,23 +417,40 @@ class App(_AppBase):
                     if self._client_factory is not None
                     else create_client(cfg.llm)
                 )
-            summary = run_batch(
-                folder,
-                cfg,
-                engine,
-                client,
-                prompt_template,
-                progress_cb=self._queue_progress,
-                log_cb=log_cb,
-                cancel_event=cancel_event,
-                file_cb=self._queue_file_done,
-                force=force,
-            )
+            if watch:
+                watch_summary = watch_loop(
+                    folder,
+                    cfg,
+                    engine,
+                    client,
+                    prompt_template,
+                    progress_cb=self._queue_progress,
+                    log_cb=log_cb,
+                    stop_event=cancel_event,
+                    file_cb=self._queue_file_done,
+                    cycle_cb=self._queue_watch_cycle,
+                )
+            else:
+                summary = run_batch(
+                    folder,
+                    cfg,
+                    engine,
+                    client,
+                    prompt_template,
+                    progress_cb=self._queue_progress,
+                    log_cb=log_cb,
+                    cancel_event=cancel_event,
+                    file_cb=self._queue_file_done,
+                    force=force,
+                )
         except Exception as exc:
             _logger.exception("GUI worker failed")
             self._queue.put(("error", f"{type(exc).__name__}: {exc}"))
         else:
-            self._queue.put(("done", summary))
+            if watch:
+                self._queue.put(("watch_done", watch_summary))
+            else:
+                self._queue.put(("done", summary))
 
     def _create_engine(
         self,
@@ -441,6 +478,9 @@ class App(_AppBase):
     def _queue_file_done(self, result: FileResult) -> None:
         self._queue.put(("file_done", result))
 
+    def _queue_watch_cycle(self, index: int, ready_count: int, cumulative: int) -> None:
+        self._queue.put(("watch_cycle", index, ready_count, cumulative))
+
     def _poll_queue(self) -> None:
         self._drain_queue()
         if not self._closed:
@@ -465,6 +505,10 @@ class App(_AppBase):
                 self._handle_file_done(event[1])
             elif kind == "done":
                 self._handle_done(event[1])
+            elif kind == "watch_cycle":
+                self._handle_watch_cycle(event)
+            elif kind == "watch_done":
+                self._handle_watch_done(event[1])
             elif kind == "error":
                 self._handle_error(str(event[1]))
 
@@ -502,6 +546,21 @@ class App(_AppBase):
         if was_running:
             self.after(0, lambda: self._show_completion(summary))
 
+    def _handle_watch_cycle(self, event: GuiEvent) -> None:
+        index, _ready_count, cumulative = event[1:4]
+        self.status_var.set(f"監看中（第 {index} 輪，累計處理 {cumulative} 檔）")
+
+    def _handle_watch_done(self, summary: object) -> None:
+        if not isinstance(summary, WatchSummary):
+            self._handle_error("GUI 收到未知的監看完成事件。")
+            return
+
+        self._set_running(False)
+        self.progressbar.set(0)
+        message = f"監看已停止：{summary.cycles} 輪，累計處理 {summary.total_processed} 檔"
+        self.status_var.set(message)
+        self._append_log(message)
+
     def _handle_error(self, message: str) -> None:
         was_running = self._running
         self._set_running(False)
@@ -514,12 +573,38 @@ class App(_AppBase):
         self._running = running
         if running:
             self.start_button.configure(state="disabled")
-            self.force_checkbox.configure(state="disabled")
-            self.cancel_button.configure(state="normal")
+            self.cancel_button.configure(
+                state="normal",
+                text="停止監看" if self._watch_running else "取消",
+            )
         else:
             self.start_button.configure(state="normal")
-            self.force_checkbox.configure(state="normal")
-            self.cancel_button.configure(state="disabled")
+            self.cancel_button.configure(state="disabled", text="取消")
+        self._sync_mode_controls()
+        if not running:
+            self._watch_running = False
+
+    def _toggle_watch_mode(self) -> None:
+        self._sync_mode_controls()
+
+    def _sync_mode_controls(self) -> None:
+        watch_selected = bool(self.watch_var.get())
+        if watch_selected:
+            self.force_var.set(False)
+        if self._running:
+            force_state = "disabled"
+            watch_state = "disabled"
+        else:
+            force_state = "disabled" if watch_selected else "normal"
+            watch_state = "normal"
+        self.force_checkbox.configure(state=force_state)
+        self.watch_checkbox.configure(state=watch_state)
+
+    def _bool_var(self, name: str, default: bool) -> bool:
+        var = self.__dict__.get(name)
+        if var is None:
+            return default
+        return bool(var.get())
 
     def _append_log(self, message: str) -> None:
         self.log_text.configure(state="normal")
@@ -618,9 +703,15 @@ class App(_AppBase):
 
     def _on_close(self) -> None:
         if self._running:
+            title = "停止監看" if self._watch_running else "取消處理"
+            message = (
+                "監看仍在進行，要停止並關閉嗎？"
+                if self._watch_running
+                else "處理仍在進行，要取消並關閉嗎？"
+            )
             confirmed = messagebox.askokcancel(
-                "取消處理",
-                "處理仍在進行，要取消並關閉嗎？",
+                title,
+                message,
                 parent=self,
             )
             if not confirmed:

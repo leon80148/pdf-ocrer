@@ -49,6 +49,12 @@ image_extensions = ["jpg", "jpeg", "png", "tif", "tiff"]
 # 同時處理檔案數。1=循序（預設）；0=自動（約核心數/4，上限3）；>1 指定。每個 worker 各載一份 OCR 模型：rapidocr 約 0.7GB、paddle 約 1.3~2.5GB
 workers = 1
 
+[watch]
+# 監看模式輪詢間隔秒數。預設：5.0；範圍：大於 0 且不超過 3600。
+poll_seconds = 5.0
+# 單一檔案失敗後最多嘗試次數；達到後凍結，直到來源檔案變動。預設：3；範圍：0–100。
+max_retries = 3
+
 [logging]
 # 是否寫入檔案日誌。預設：true。
 enabled = true
