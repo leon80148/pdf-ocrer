@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 import argparse
+import logging
 import sys
 from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
 
 from pdf_ocrer import __version__
-from pdf_ocrer.config import ConfigError, LlmConfig, OcrConfig, load_config
+from pdf_ocrer.app_logging import setup_logging
+from pdf_ocrer.config import ConfigError, LlmConfig, LoggingConfig, OcrConfig, load_config
 from pdf_ocrer.llm_providers import LLMClient, create_client
 from pdf_ocrer.ocr_engine import OcrEngineProtocol, create_engine
 from pdf_ocrer.pipeline import BatchSummary, FileStatus, run_batch
@@ -58,6 +60,7 @@ def main(
 
     try:
         cfg = load_config(args.config)
+        setup_logging(cfg.logging)
         if args.no_llm:
             cfg = replace(cfg, llm=replace(cfg.llm, provider="none"))
         if args.dpi is not None:
@@ -85,6 +88,8 @@ def main(
             log_cb=log_cb,
         )
     except ConfigError as exc:
+        setup_logging(LoggingConfig())
+        logging.getLogger("pdf_ocrer").error("設定錯誤: %s", exc)
         print(f"設定錯誤: {exc}", file=sys.stderr)
         return 1
 

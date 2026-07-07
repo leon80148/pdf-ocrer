@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import logging
 import queue
 import threading
 import tkinter as tk
@@ -21,7 +22,8 @@ else:
 
 from pdf_ocrer import __version__
 from pdf_ocrer.cli import DEFAULT_NAMING_PROMPT, _load_prompt
-from pdf_ocrer.config import ConfigError, GuiConfig, LlmConfig, OcrConfig, load_config
+from pdf_ocrer.app_logging import setup_logging
+from pdf_ocrer.config import ConfigError, GuiConfig, LlmConfig, LoggingConfig, OcrConfig, load_config
 from pdf_ocrer.llm_providers import LLMClient, create_client
 from pdf_ocrer.ocr_engine import OcrEngineProtocol, create_engine
 from pdf_ocrer.pipeline import BatchSummary, FileResult, FileStatus, run_batch
@@ -42,6 +44,7 @@ _SEGMENT_TO_APPEARANCE = {
     "系統": "system",
 }
 _TREE_COLUMNS = ("source", "status", "output", "ocr_pages")
+_logger = logging.getLogger(__name__)
 
 
 def run_gui(config_path: Path | None = None) -> None:
@@ -203,8 +206,12 @@ class App(_AppBase):
 
     def _load_initial_gui_config(self) -> GuiConfig:
         try:
-            return load_config(self._config_path).gui
-        except ConfigError:
+            cfg = load_config(self._config_path)
+            setup_logging(cfg.logging)
+            return cfg.gui
+        except ConfigError as exc:
+            setup_logging(LoggingConfig())
+            _logger.error("設定錯誤: %s", exc)
             return GuiConfig()
 
     def _build_widgets(self, initial_appearance: str) -> None:
@@ -365,6 +372,7 @@ class App(_AppBase):
     def _run_worker(self, folder: Path, cancel_event: threading.Event) -> None:
         try:
             cfg = load_config(self._config_path)
+            setup_logging(cfg.logging)
             log_cb = self._queue_log
             prompt_template = _load_prompt(Path(cfg.naming.prompt_file))
             engine = self._create_engine(cfg.ocr, log_cb)
@@ -387,6 +395,7 @@ class App(_AppBase):
                 file_cb=self._queue_file_done,
             )
         except Exception as exc:
+            _logger.exception("GUI worker failed")
             self._queue.put(("error", f"{type(exc).__name__}: {exc}"))
         else:
             self._queue.put(("done", summary))

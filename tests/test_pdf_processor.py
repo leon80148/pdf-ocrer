@@ -63,6 +63,34 @@ def px_poly_from_gt(
     )
 
 
+def display_bbox_from_px_poly(poly: tuple[tuple[float, float], ...], dpi: int = _DPI) -> pymupdf.Rect:
+    scale = 72.0 / dpi
+    xs = [point[0] * scale for point in poly[:4]]
+    ys = [point[1] * scale for point in poly[:4]]
+    return pymupdf.Rect(min(xs), min(ys), max(xs), max(ys))
+
+
+def display_word_rect(page: pymupdf.Page, text: str) -> pymupdf.Rect:
+    words = [word for word in page.get_text("words") if word[4] == text]
+    assert words
+
+    rect = pymupdf.Rect(words[0][:4])
+    for word in words[1:]:
+        rect |= pymupdf.Rect(word[:4])
+
+    matrix = page.rotation_matrix
+    corners = (
+        pymupdf.Point(rect.x0, rect.y0),
+        pymupdf.Point(rect.x1, rect.y0),
+        pymupdf.Point(rect.x1, rect.y1),
+        pymupdf.Point(rect.x0, rect.y1),
+    )
+    display_points = [point * matrix for point in corners]
+    xs = [point.x for point in display_points]
+    ys = [point.y for point in display_points]
+    return pymupdf.Rect(min(xs), min(ys), max(xs), max(ys))
+
+
 def test_render_page_dims(fixtures_dir) -> None:
     doc = pymupdf.open(fixtures_dir / "scanned.pdf")
 
@@ -89,30 +117,42 @@ def test_add_text_layer_roundtrip_search(fixtures_dir, tmp_path) -> None:
     assert abs(rects[0].x0 - 72) < 20
     assert abs(rects[0].y1 - 100) < 25
 
-
-def test_add_text_layer_rotated_page_search_rect_is_unrotated(fixtures_dir, tmp_path) -> None:
-    doc = pymupdf.open(fixtures_dir / "rotated.pdf")
-    page = doc[0]
+@pytest.mark.parametrize("rotation", [0, 90, 180, 270])
+def test_add_text_layer_display_highlight_tracks_rotated_page(
+    fixtures_dir,
+    tmp_path,
+    rotation: int,
+) -> None:
+    doc = pymupdf.open(fixtures_dir / "scanned.pdf")
+    text = "診斷證明書"
     display_baseline = pymupdf.Point(120, 150)
-    expected_baseline = display_baseline * page.derotation_matrix
-    line = OcrLine(
-        "診斷證明書",
-        px_poly_from_gt(GT_LINES[0], baseline_pt=(display_baseline.x, display_baseline.y)),
-        0.99,
-    )
+    poly = px_poly_from_gt(GT_LINES[0], baseline_pt=(display_baseline.x, display_baseline.y))
+    line = OcrLine(text, poly, 0.99)
+    out = tmp_path / f"rotated_{rotation}_ocr.pdf"
 
-    written = add_text_layer(page, [line], dpi=_DPI)
-    out = tmp_path / "rotated_ocr.pdf"
-    doc.save(out)
-    p2 = pymupdf.open(out)[0]
+    try:
+        page = doc[0]
+        page.set_rotation(rotation)
+        written = add_text_layer(page, [line], dpi=_DPI)
+        doc.save(out)
+    finally:
+        doc.close()
 
-    assert written == 1
-    assert p2.rotation == 90
-    assert "診斷證明書" in p2.get_text()
-    rects = p2.search_for("診斷證明書")
-    assert rects
-    assert abs(rects[0].x0 - expected_baseline.x) < 20
-    assert abs(rects[0].y1 - expected_baseline.y) < 25
+    out_doc = pymupdf.open(out)
+    try:
+        p2 = out_doc[0]
+        display_rect = display_word_rect(p2, text)
+        expected_rect = display_bbox_from_px_poly(poly)
+
+        assert written == 1
+        assert p2.rotation == rotation
+        assert text in p2.get_text()
+        assert display_rect.height < display_rect.width
+        assert abs(display_rect.x0 - expected_rect.x0) < 3
+        assert abs(display_rect.y0 - expected_rect.y0) < 3
+        assert abs(display_rect.width - expected_rect.width) < 3
+    finally:
+        out_doc.close()
 
 
 def test_invisible_by_default_is_pixel_identical(fixtures_dir) -> None:
@@ -155,6 +195,9 @@ def test_process_pdf_mixed_keeps_existing_text_page(fixtures_dir) -> None:
         PageReport(page_index=0, action="ocr", line_count=1),
         PageReport(page_index=1, action="kept_existing", line_count=0),
     ]
+    assert len(result.page_texts) == 2
+    assert "診斷證明書" in result.page_texts[0]
+    assert "高雄市安家診所" in result.page_texts[1]
     assert "診斷證明書" in result.text
 
 

@@ -69,6 +69,12 @@ def test_collision_disk_and_batch(tmp_path):
     assert resolve_collision(tmp_path, "RePort", {"report"}) == "RePort_2"
 
 
+def test_collision_treats_existing_txt_as_unavailable(tmp_path):
+    (tmp_path / "X.txt").touch()
+
+    assert resolve_collision(tmp_path, "X", set()) == "X_2"
+
+
 def test_suggest_retries_once_then_fallback():
     calls = []
 

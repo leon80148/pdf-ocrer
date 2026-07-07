@@ -34,6 +34,16 @@ textline_orientation = true
 subdir_name = "OCR輸出"
 # CSV 對照表檔名前綴。預設：對照表。
 csv_prefix = "對照表"
+# 每檔輸出 PDF 之外另存 .txt 純文字（utf-8-sig）。預設：false。
+export_txt = false
+
+[logging]
+# 是否寫入檔案日誌。預設：true。
+enabled = true
+# 檔案日誌等級。預設：INFO；可選 DEBUG/INFO/WARNING/ERROR。
+level = "INFO"
+# 日誌資料夾。空字串會使用 %LOCALAPPDATA%\pdf_ocrer\logs；無 LOCALAPPDATA 時使用 ~/.pdf_ocrer/logs。
+dir = ""
 
 [naming]
 # 是否啟用 LLM 命名。預設：true。

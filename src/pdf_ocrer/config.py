@@ -34,6 +34,7 @@ class OcrConfig:
 class OutputConfig:
     subdir_name: str = "OCR輸出"
     csv_prefix: str = "對照表"
+    export_txt: bool = False
 
 
 @dataclass(frozen=True)
@@ -69,6 +70,13 @@ class GuiConfig:
 
 
 @dataclass(frozen=True)
+class LoggingConfig:
+    enabled: bool = True
+    level: str = "INFO"
+    dir: str = ""
+
+
+@dataclass(frozen=True)
 class AppConfig:
     ocr: OcrConfig
     output: OutputConfig
@@ -76,6 +84,7 @@ class AppConfig:
     llm: LlmConfig
     debug: DebugConfig
     gui: GuiConfig = GuiConfig()
+    logging: LoggingConfig = LoggingConfig()
 
 
 class ConfigError(ValueError):
@@ -116,6 +125,7 @@ def load_config(path: Path | None = None) -> AppConfig:
         "llm": LlmConfig,
         "debug": DebugConfig,
         "gui": GuiConfig,
+        "logging": LoggingConfig,
     }
     section_values: dict[str, object] = {}
 
@@ -136,6 +146,7 @@ def load_config(path: Path | None = None) -> AppConfig:
             llm=_section(section_values, "llm", LlmConfig()),
             debug=_section(section_values, "debug", DebugConfig()),
             gui=_section(section_values, "gui", GuiConfig()),
+            logging=_section(section_values, "logging", LoggingConfig()),
         )
     )
 
@@ -279,9 +290,16 @@ def _warn_unknown(name: str) -> None:
 
 def _validate(cfg: AppConfig) -> AppConfig:
     ocr = _validate_ocr(cfg.ocr)
+    output = _validate_output(cfg.output)
     _validate_naming(cfg.naming)
     _validate_llm(cfg.llm)
-    return replace(cfg, ocr=ocr, gui=_validate_gui(cfg.gui))
+    return replace(
+        cfg,
+        ocr=ocr,
+        output=output,
+        gui=_validate_gui(cfg.gui),
+        logging=_validate_logging(cfg.logging),
+    )
 
 
 def _validate_ocr(cfg: OcrConfig) -> OcrConfig:
@@ -315,6 +333,11 @@ def _validate_ocr(cfg: OcrConfig) -> OcrConfig:
     _require_bool("textline_orientation", cfg.textline_orientation)
 
     return cfg if engine == cfg.engine else replace(cfg, engine=engine)
+
+
+def _validate_output(cfg: OutputConfig) -> OutputConfig:
+    _require_bool("export_txt", cfg.export_txt)
+    return cfg
 
 
 def _validate_naming(cfg: NamingConfig) -> None:
@@ -354,6 +377,27 @@ def _validate_gui(cfg: GuiConfig) -> GuiConfig:
         raise ConfigError("設定欄位 appearance 必須是 system/light/dark")
 
     return cfg if appearance == cfg.appearance else GuiConfig(appearance=appearance)
+
+
+def _validate_logging(cfg: LoggingConfig) -> LoggingConfig:
+    _require_bool("enabled", cfg.enabled)
+    if not isinstance(cfg.level, str):
+        raise ConfigError("設定欄位 level 必須是 DEBUG/INFO/WARNING/ERROR")
+    if not isinstance(cfg.dir, str):
+        raise ConfigError("設定欄位 dir 必須是字串")
+
+    level = cfg.level.casefold()
+    levels = {
+        "debug": "DEBUG",
+        "info": "INFO",
+        "warning": "WARNING",
+        "error": "ERROR",
+    }
+    if level not in levels:
+        raise ConfigError("設定欄位 level 必須是 DEBUG/INFO/WARNING/ERROR")
+
+    normalized = levels[level]
+    return cfg if normalized == cfg.level else replace(cfg, level=normalized)
 
 
 def _require_int(field_name: str, value: object) -> None:

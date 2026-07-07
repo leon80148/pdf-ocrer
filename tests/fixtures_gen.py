@@ -26,9 +26,9 @@ def build_scanned(path: Path) -> None:
     _save(doc, path)
 
 
-def build_rotated(path: Path) -> None:
+def build_rotated(path: Path, rotation: int = 90) -> None:
     doc = _new_scanned_doc()
-    doc[0].set_rotation(90)
+    doc[0].set_rotation(rotation)
     _save(doc, path)
 
 
@@ -60,6 +60,8 @@ def build_all(folder: Path) -> dict[str, Path]:
         "native": folder / "native.pdf",
         "scanned": folder / "scanned.pdf",
         "rotated": folder / "rotated.pdf",
+        "rotated_180": folder / "rotated_180.pdf",
+        "rotated_270": folder / "rotated_270.pdf",
         "mixed": folder / "mixed.pdf",
         "encrypted": folder / "encrypted.pdf",
         "corrupt": folder / "corrupt.pdf",
@@ -67,6 +69,8 @@ def build_all(folder: Path) -> dict[str, Path]:
     build_native(paths["native"])
     build_scanned(paths["scanned"])
     build_rotated(paths["rotated"])
+    build_rotated(paths["rotated_180"], 180)
+    build_rotated(paths["rotated_270"], 270)
     build_mixed(paths["mixed"])
     build_encrypted(paths["encrypted"])
     build_corrupt(paths["corrupt"])

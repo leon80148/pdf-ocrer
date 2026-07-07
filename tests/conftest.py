@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import shutil
 import sys
 from pathlib import Path
@@ -20,6 +21,14 @@ def fixtures_dir(tmp_path_factory) -> Path:
     return folder
 
 
+@pytest.fixture(autouse=True)
+def isolated_localappdata(tmp_path_factory, monkeypatch) -> None:
+    local_appdata = tmp_path_factory.mktemp("localappdata")
+    monkeypatch.setenv("LOCALAPPDATA", str(local_appdata))
+    yield
+    _remove_pdf_ocrer_file_handlers()
+
+
 @pytest.fixture()
 def work_folder(fixtures_dir, tmp_path) -> Path:
     folder = tmp_path / "fixtures"
@@ -28,3 +37,11 @@ def work_folder(fixtures_dir, tmp_path) -> Path:
         if path.is_file():
             shutil.copy2(path, folder / path.name)
     return folder
+
+
+def _remove_pdf_ocrer_file_handlers() -> None:
+    logger = logging.getLogger("pdf_ocrer")
+    for handler in list(logger.handlers):
+        if getattr(handler, "_pdf_ocrer_file_handler", False):
+            logger.removeHandler(handler)
+            handler.close()

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import re
 from collections.abc import Callable
 from datetime import date
@@ -14,6 +15,7 @@ _THINK_RE = re.compile(r"<think>.*?</think>", flags=re.DOTALL)
 _ILLEGAL_RE = re.compile(r'[\x00-\x1f\x7f\\/:*?"<>|]')
 _WHITESPACE_RE = re.compile(r"\s+")
 _EDGE_MARKERS = " \t\r\n'\"`*“”‘’「」『』"
+_logger = logging.getLogger(__name__)
 _RESERVED_DEVICE_NAMES = {
     "con",
     "prn",
@@ -91,6 +93,7 @@ def suggest_filename(
         except LLMError as exc:
             if attempt == 0:
                 continue
+            _logger.warning("LLM naming failed; using fallback filename: %s", exc)
             if log is not None:
                 log(f"LLM 命名失敗，改用備用檔名：{exc}")
             return _fallback(original_stem, cfg)
@@ -120,7 +123,11 @@ def _is_reserved_device_name(value: str) -> bool:
 
 
 def _stem_unavailable(out_dir: Path, stem: str, used: set[str]) -> bool:
-    return (out_dir / f"{stem}.pdf").exists() or stem.casefold() in used
+    return (
+        (out_dir / f"{stem}.pdf").exists()
+        or (out_dir / f"{stem}.txt").exists()
+        or stem.casefold() in used
+    )
 
 
 def _fallback(original_stem: str, cfg: AppConfig) -> tuple[str, str]:

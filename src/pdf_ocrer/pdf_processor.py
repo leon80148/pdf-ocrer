@@ -5,6 +5,9 @@ PyMuPDF 1.28 rotation probe, run for this task: after `page.set_rotation(90)`,
 the unrotated page coordinate space. Rendering and OCR boxes are in rotated
 display space, so insertion points derived from pixmap coordinates must be
 multiplied by `page.derotation_matrix` before `insert_text()`.
+2026-07-08 rotation compensation: `insert_text()` morph matrices must also
+include `Matrix(page.rotation)` so display-space highlights keep OCR line
+orientation on `/Rotate` pages.
 """
 
 from __future__ import annotations
@@ -81,7 +84,7 @@ def add_text_layer(
             fontname=_FONT_NAME,
             render_mode=0 if visible else 3,
             color=(1, 0, 0) if visible else None,
-            morph=(baseline, pymupdf.Matrix(sx, 1.0)),
+            morph=(baseline, pymupdf.Matrix(sx, 1.0) * pymupdf.Matrix(page.rotation)),
         )
         written += 1
 
@@ -99,6 +102,7 @@ class PageReport:
 class PdfResult:
     doc: pymupdf.Document
     text: str
+    page_texts: list[str]
     reports: list[PageReport]
     total_pages: int
     ocr_pages: int
@@ -130,7 +134,7 @@ def process_pdf(
             page = doc[page_index]
             if cfg.ocr.skip_pages_with_text and has_text_layer(page, cfg.ocr.min_existing_chars):
                 reports.append(PageReport(page_index, "kept_existing", 0))
-                page_texts.append(page.get_text().strip())
+                page_texts.append(page.get_text())
             else:
                 img = render_page(page, cfg.ocr.dpi)
                 lines = engine.recognize(img)
@@ -141,14 +145,15 @@ def process_pdf(
                 reports.append(PageReport(page_index, action, line_count))
                 if action == "ocr":
                     ocr_pages += 1
-                page_texts.append(page.get_text().strip())
+                page_texts.append(page.get_text())
 
             if page_cb is not None:
                 page_cb(page_index, total_pages)
 
         return PdfResult(
             doc=doc,
-            text="\n\n".join(page_texts),
+            text="\n\n".join(page_text.strip() for page_text in page_texts),
+            page_texts=page_texts,
             reports=reports,
             total_pages=total_pages,
             ocr_pages=ocr_pages,

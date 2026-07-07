@@ -310,9 +310,8 @@ usual accuracy tradeoff.
 
 ## Known Limitations
 
-- Pages whose content is sideways while the PDF is also displayed sideways,
-  without `/Rotate` compensation, are searchable but highlight orientation may be
-  off.
+- Sideways scans without a `/Rotate` page marker are searchable, but highlight
+  orientation may be off.
 - Skewed text lines are searchable, but highlights can be slightly offset because
   v1 inserts an axis-aligned text layer.
 - Password-protected PDFs are skipped and recorded in the CSV.

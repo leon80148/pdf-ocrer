@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import sys
 import tomllib
 import types
@@ -68,6 +69,34 @@ def test_main_folder_no_llm_creates_csv_and_passes_dpi(work_folder, capsys) -> N
     assert "CSV:" in stdout
 
 
+def test_main_writes_batch_log_from_config_dir(work_folder, tmp_path) -> None:
+    _keep_only(work_folder, {"scanned.pdf", "native.pdf"})
+    log_dir = tmp_path / "logs"
+    log_dir_text = str(log_dir).replace("\\", "/")
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        "[logging]\n"
+        f'dir = "{log_dir_text}"\n'
+        "[naming]\n"
+        "enabled = false\n",
+        encoding="utf-8",
+    )
+
+    exit_code = main(
+        [str(work_folder), "--config", str(config_path)],
+        engine_factory=lambda ocr_cfg: FakeEngine(),
+        client_factory=lambda llm_cfg: None,
+    )
+
+    _flush_pdf_ocrer_file_handlers()
+    text = (log_dir / "pdf_ocrer.log").read_text(encoding="utf-8")
+    assert exit_code == 0
+    assert "batch start" in text
+    assert "source=native.pdf" in text
+    assert "source=scanned.pdf" in text
+    assert "batch end" in text
+
+
 def test_main_engine_override_passes_to_engine_factory(work_folder, tmp_path) -> None:
     _keep_only(work_folder, {"scanned.pdf", "native.pdf"})
     config_path = tmp_path / "config.toml"
@@ -108,6 +137,30 @@ def test_main_create_engine_config_error_reports_install_hint(
     captured = capsys.readouterr()
     assert exit_code == 1
     assert "pip install pdf-ocrer[rapidocr]" in captured.err
+
+
+def test_main_config_error_writes_default_log(
+    work_folder,
+    tmp_path,
+    monkeypatch,
+    capsys,
+) -> None:
+    _keep_only(work_folder, {"scanned.pdf"})
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "local"))
+    config_path = tmp_path / "bad.toml"
+    config_path.write_text('[logging]\nlevel = "TRACE"\n', encoding="utf-8")
+
+    exit_code = main(
+        [str(work_folder), "--config", str(config_path)],
+        engine_factory=lambda ocr_cfg: FakeEngine(),
+    )
+
+    _flush_pdf_ocrer_file_handlers()
+    captured = capsys.readouterr()
+    log_path = tmp_path / "local" / "pdf_ocrer" / "logs" / "pdf_ocrer.log"
+    assert exit_code == 1
+    assert "設定錯誤:" in captured.err
+    assert "設定錯誤:" in log_path.read_text(encoding="utf-8")
 
 
 def test_main_naming_disabled_skips_llm_client_for_unknown_provider(work_folder, tmp_path) -> None:
@@ -179,3 +232,25 @@ def _keep_only(folder: Path, names: set[str]) -> None:
     for path in folder.iterdir():
         if path.is_file() and path.name not in names:
             path.unlink()
+
+
+def setup_function() -> None:
+    _remove_pdf_ocrer_file_handlers()
+
+
+def teardown_function() -> None:
+    _remove_pdf_ocrer_file_handlers()
+
+
+def _remove_pdf_ocrer_file_handlers() -> None:
+    logger = logging.getLogger("pdf_ocrer")
+    for handler in list(logger.handlers):
+        if getattr(handler, "_pdf_ocrer_file_handler", False):
+            logger.removeHandler(handler)
+            handler.close()
+
+
+def _flush_pdf_ocrer_file_handlers() -> None:
+    for handler in logging.getLogger("pdf_ocrer").handlers:
+        if getattr(handler, "_pdf_ocrer_file_handler", False):
+            handler.flush()

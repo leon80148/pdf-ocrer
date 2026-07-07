@@ -9,6 +9,7 @@ from pdf_ocrer.config import (
     CommonSettings,
     ConfigError,
     LlmConfig,
+    LoggingConfig,
     apply_common_settings,
     ensure_config_file,
     load_config,
@@ -41,7 +42,9 @@ def test_defaults_when_no_file(tmp_path):
     assert cfg.ocr.cpu_threads == 0
     assert cfg.ocr.textline_orientation is True
     assert cfg.llm.provider == "openai_compatible"
+    assert cfg.output.export_txt is False
     assert cfg.gui.appearance == "system"
+    assert cfg.logging == LoggingConfig()
 
 
 def test_toml_overrides(tmp_path):
@@ -49,6 +52,21 @@ def test_toml_overrides(tmp_path):
     p.write_text("[ocr]\ndpi = 300\n", encoding="utf-8")
 
     assert load_config(p).ocr.dpi == 300
+
+
+def test_output_export_txt_loads_from_toml(tmp_path):
+    p = tmp_path / "c.toml"
+    p.write_text("[output]\nexport_txt = true\n", encoding="utf-8")
+
+    assert load_config(p).output.export_txt is True
+
+
+def test_invalid_output_export_txt_type_raises(tmp_path):
+    p = tmp_path / "c.toml"
+    p.write_text('[output]\nexport_txt = "yes"\n', encoding="utf-8")
+
+    with pytest.raises(ConfigError, match="export_txt"):
+        load_config(p)
 
 
 def test_old_ocr_config_loads_new_engine_defaults(tmp_path):
@@ -106,6 +124,39 @@ def test_gui_appearance_loads(tmp_path):
     p.write_text("[gui]\nappearance = \"dark\"\n", encoding="utf-8")
 
     assert load_config(p).gui.appearance == "dark"
+
+
+def test_logging_config_loads_and_normalizes_level(tmp_path):
+    p = tmp_path / "c.toml"
+    p.write_text(
+        "[logging]\n"
+        "enabled = false\n"
+        'level = "debug"\n'
+        'dir = "C:/logs/pdf_ocrer"\n',
+        encoding="utf-8",
+    )
+
+    cfg = load_config(p)
+
+    assert cfg.logging.enabled is False
+    assert cfg.logging.level == "DEBUG"
+    assert cfg.logging.dir == "C:/logs/pdf_ocrer"
+
+
+def test_invalid_logging_level_raises(tmp_path):
+    p = tmp_path / "c.toml"
+    p.write_text('[logging]\nlevel = "TRACE"\n', encoding="utf-8")
+
+    with pytest.raises(ConfigError, match="level"):
+        load_config(p)
+
+
+def test_invalid_logging_enabled_type_raises(tmp_path):
+    p = tmp_path / "c.toml"
+    p.write_text('[logging]\nenabled = "yes"\n', encoding="utf-8")
+
+    with pytest.raises(ConfigError, match="enabled"):
+        load_config(p)
 
 
 def test_invalid_gui_appearance_raises(tmp_path):

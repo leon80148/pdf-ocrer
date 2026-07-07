@@ -9,7 +9,16 @@ from fixtures_gen import GT_LINES, build_all
 def test_build_all_creates_expected_fixture_files(tmp_path):
     paths = build_all(tmp_path)
 
-    assert set(paths) == {"native", "scanned", "rotated", "mixed", "encrypted", "corrupt"}
+    assert set(paths) == {
+        "native",
+        "scanned",
+        "rotated",
+        "rotated_180",
+        "rotated_270",
+        "mixed",
+        "encrypted",
+        "corrupt",
+    }
     for name, path in paths.items():
         assert path == tmp_path / f"{name}.pdf"
         assert path.is_file()
@@ -29,10 +38,14 @@ def test_native_has_text(fixtures_dir):
         assert expected in text
 
 
-def test_rotated_is_90(fixtures_dir):
-    doc = pymupdf.open(fixtures_dir / "rotated.pdf")
+@pytest.mark.parametrize(
+    ("name", "rotation"),
+    [("rotated", 90), ("rotated_180", 180), ("rotated_270", 270)],
+)
+def test_rotated_fixtures_have_requested_rotation(fixtures_dir, name: str, rotation: int):
+    doc = pymupdf.open(fixtures_dir / f"{name}.pdf")
 
-    assert doc[0].rotation == 90
+    assert doc[0].rotation == rotation
     assert doc[0].get_text().strip() == ""
 
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import logging
 import shutil
 import threading
 from collections.abc import Callable
@@ -46,6 +47,7 @@ class BatchSummary:
 ProgressCb = Callable[[int, int, int, int, str], None]
 
 _CSV_HEADER = ["原檔名", "新檔名", "狀態", "總頁數", "OCR頁數", "命名來源", "備註"]
+_logger = logging.getLogger(__name__)
 
 
 def run_batch(
@@ -64,10 +66,13 @@ def run_batch(
     output_dir.mkdir(exist_ok=True)
 
     files = _scan_pdfs(folder, output_dir)
+    _logger.info("batch start folder=%s files=%d", folder, len(files))
     if not files:
         if log_cb is not None:
             log_cb("找不到 PDF 檔案。")
-        return BatchSummary(results=[], csv_path=None, output_dir=output_dir, cancelled=False)
+        summary = BatchSummary(results=[], csv_path=None, output_dir=output_dir, cancelled=False)
+        _log_batch_end(summary)
+        return summary
 
     csv_path = output_dir / f"{cfg.output.csv_prefix}_{datetime.now():%Y%m%d_%H%M%S}.csv"
     results: list[FileResult] = []
@@ -129,10 +134,13 @@ def run_batch(
             _write_csv_row(writer, result)
             csv_file.flush()
             results.append(result)
+            _log_file_result(result)
             if file_cb is not None:
                 file_cb(result)
 
-    return BatchSummary(results=results, csv_path=csv_path, output_dir=output_dir, cancelled=cancelled)
+    summary = BatchSummary(results=results, csv_path=csv_path, output_dir=output_dir, cancelled=cancelled)
+    _log_batch_end(summary)
+    return summary
 
 
 def _scan_pdfs(folder: Path, output_dir: Path) -> list[Path]:
@@ -180,7 +188,7 @@ def _finalize_processed_file(
         all_existing_text = all(report.action == "kept_existing" for report in processed.reports)
         stem, naming_source = _choose_stem(
             src,
-            processed.text,
+            processed.page_texts,
             cfg,
             client,
             prompt_template,
@@ -207,6 +215,8 @@ def _finalize_processed_file(
                 else FileStatus.NO_TEXT_FOUND
             )
 
+        _write_txt_export(output, processed.page_texts, cfg)
+
         return FileResult(
             source=src,
             output=output,
@@ -223,7 +233,7 @@ def _finalize_processed_file(
 
 def _choose_stem(
     src: Path,
-    text: str,
+    page_texts: list[str],
     cfg: AppConfig,
     client: LLMClient | None,
     prompt_template: str,
@@ -237,7 +247,7 @@ def _choose_stem(
         stem = src.stem
         naming_source = "none"
     elif cfg.naming.enabled:
-        naming_text = _text_for_naming(text, cfg)
+        naming_text = _text_for_naming(page_texts, cfg)
         if naming_text.strip():
             stem, naming_source = suggest_filename(
                 naming_text,
@@ -257,9 +267,27 @@ def _choose_stem(
     return resolve_collision(output_dir, stem, used_stems), naming_source
 
 
-def _text_for_naming(text: str, cfg: AppConfig) -> str:
-    pages = text.split("\n\n")[: cfg.naming.max_pages_to_llm]
-    return "\n\n".join(pages)[: cfg.naming.max_chars_to_llm]
+def _text_for_naming(page_texts: list[str], cfg: AppConfig) -> str:
+    pages = page_texts[: cfg.naming.max_pages_to_llm]
+    return "\n\n".join(page.strip() for page in pages)[: cfg.naming.max_chars_to_llm]
+
+
+def _write_txt_export(output: Path, page_texts: list[str], cfg: AppConfig) -> None:
+    if not cfg.output.export_txt or not any(page_text.strip() for page_text in page_texts):
+        return
+
+    blocks = [
+        f"--- 第 {index} 頁 ---\n{page_text.strip()}"
+        for index, page_text in enumerate(page_texts, start=1)
+    ]
+    try:
+        output.with_suffix(".txt").write_text(
+            "\n\n".join(blocks) + "\n",
+            encoding="utf-8-sig",
+            errors="replace",
+        )
+    except OSError as exc:
+        _logger.warning("txt export failed output=%s error=%s", output, exc)
 
 
 def _write_csv_row(writer: csv.writer, result: FileResult) -> None:
@@ -273,4 +301,28 @@ def _write_csv_row(writer: csv.writer, result: FileResult) -> None:
             result.naming_source,
             result.note,
         ]
+    )
+
+
+def _log_file_result(result: FileResult) -> None:
+    output_name = "" if result.output is None else result.output.name
+    _logger.info(
+        "file result source=%s status=%s output=%s note=%s",
+        result.source.name,
+        result.status.value,
+        output_name,
+        result.note,
+    )
+
+
+def _log_batch_end(summary: BatchSummary) -> None:
+    failed = sum(result.status is FileStatus.FAILED for result in summary.results)
+    skipped = sum(result.status is FileStatus.SKIPPED_ENCRYPTED for result in summary.results)
+    _logger.info(
+        "batch end results=%d failed=%d skipped=%d cancelled=%s csv=%s",
+        len(summary.results),
+        failed,
+        skipped,
+        summary.cancelled,
+        summary.csv_path,
     )
