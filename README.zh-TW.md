@@ -93,7 +93,8 @@ pdf-ocrer "C:\Scans"
 表，欄位包含 `原檔名`、`狀態`、`新檔名`、`OCR頁數`，並依每個檔案即時更新。你可以按
 按鈕選資料夾，也可以把資料夾拖放到視窗上；如果系統無法使用 `tkinterdnd2`，拖放功能
 會自動關閉，仍可用一般選取資料夾方式操作。介面可切換系統、淺色、深色主題，預設值
-來自 `config.toml` 的 `[gui] appearance`。`完成後開啟對照表` 預設勾選，批次完成後會
+來自 `config.toml` 的 `[gui] appearance`。設定視窗可調整 OCR 引擎、DPI、最低信心分數、
+模型大小、同時處理檔案數、LLM 命名與常用 LLM 連線欄位。`完成後開啟對照表` 預設勾選，批次完成後會
 自動開啟 CSV 對照表；`全部重新處理` 可在該次執行忽略增量記錄。
 
 ## 命令列選項
@@ -105,6 +106,7 @@ pdf-ocrer <folder>            # 批次處理資料夾裡的 PDF/圖片
   --no-llm                    # 不使用 LLM 命名
   --dpi N                     # 指定 OCR 解析度
   --engine NAME               # 本次執行覆寫 OCR 引擎：paddle 或 rapidocr
+  --workers N                 # 本次執行覆寫同時處理檔案數；0=自動，1=循序
   --recursive                 # 掃描子資料夾，並在輸出資料夾鏡像原結構
   --force                     # 忽略增量記錄，全部重新處理
   --version                   # 顯示版本
@@ -264,6 +266,18 @@ incremental = true  # 預設 true；設 false 則每次都重新處理
 recursive = true
 image_extensions = ["jpg", "jpeg", "png", "tif", "tiff"]  # 設為 [] 可只處理 PDF
 ```
+
+平行處理可在設定檔中調整：
+
+```toml
+[performance]
+workers = 1  # 預設循序；0=自動（最多 3）；2 到 8=指定 worker 數
+```
+
+每個 worker 會各載一份 OCR 模型，RapidOCR 約需 0.7 GB 記憶體，PaddleOCR 約需 1.3 到
+2.5 GB。建議至少 6 個檔案以上再開平行，診所一般電腦可先從 `workers = 2` 試起。
+若手動設定 `cpu_threads`，平行模式下每個 worker 都沿用該值（總執行緒約為
+`workers × cpu_threads`），建議平行時保留 `cpu_threads = 0` 讓程式自動分配。
 
 ## 速度與模型
 

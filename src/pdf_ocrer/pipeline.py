@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import logging
+import os
 import shutil
 import threading
 from collections.abc import Callable
@@ -10,7 +11,7 @@ from datetime import datetime
 from enum import Enum
 from pathlib import Path, PurePosixPath
 
-from pdf_ocrer.config import AppConfig
+from pdf_ocrer.config import AppConfig, resolve_worker_count
 from pdf_ocrer.llm_namer import resolve_collision, suggest_filename
 from pdf_ocrer.llm_providers import LLMClient
 from pdf_ocrer.manifest import MANIFEST_NAME, FileIdentity, Manifest, ManifestEntry
@@ -66,6 +67,23 @@ def run_batch(
     file_cb: Callable[[FileResult], None] | None = None,
     force: bool = False,
 ) -> BatchSummary:
+    workers = resolve_worker_count(cfg.performance, os.cpu_count())
+    if workers > 1:
+        from pdf_ocrer.parallel import run_batch_parallel
+
+        return run_batch_parallel(
+            folder,
+            cfg,
+            engine,
+            client,
+            prompt_template,
+            progress_cb=progress_cb,
+            log_cb=log_cb,
+            cancel_event=cancel_event,
+            file_cb=file_cb,
+            force=force,
+        )
+
     folder = Path(folder)
     output_dir = folder / cfg.output.subdir_name
     output_dir.mkdir(exist_ok=True)

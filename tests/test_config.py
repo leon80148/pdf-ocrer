@@ -11,21 +11,27 @@ from pdf_ocrer.config import (
     InputConfig,
     LlmConfig,
     LoggingConfig,
+    OcrConfig,
     OutputConfig,
+    PerformanceConfig,
     apply_common_settings,
     ensure_config_file,
     load_config,
     read_common_settings,
     resolve_api_key,
+    resolve_cpu_threads,
+    resolve_worker_count,
 )
 
 
 def _common_settings(**overrides: object) -> CommonSettings:
     values = {
+        "engine": "rapidocr",
         "dpi": 300,
         "min_confidence": 0.75,
         "det_model_name": "PP-OCRv6_mobile_det",
         "rec_model_name": "PP-OCRv6_mobile_rec",
+        "workers": 3,
         "naming_enabled": False,
         "llm_provider": "none",
         "llm_model": "local-model",
@@ -46,8 +52,46 @@ def test_defaults_when_no_file(tmp_path):
     assert cfg.llm.provider == "openai_compatible"
     assert cfg.output.export_txt is False
     assert cfg.input == InputConfig()
+    assert cfg.performance == PerformanceConfig()
     assert cfg.gui.appearance == "system"
     assert cfg.logging == LoggingConfig()
+
+
+@pytest.mark.parametrize(
+    ("workers", "cpu_count", "expected"),
+    [
+        (1, None, 1),
+        (2, 64, 2),
+        (8, 64, 8),
+        (99, 64, 8),
+        (0, None, 1),
+        (0, 0, 1),
+        (0, 1, 1),
+        (0, 4, 1),
+        (0, 8, 2),
+        (0, 12, 3),
+        (0, 64, 3),
+    ],
+)
+def test_resolve_worker_count(workers, cpu_count, expected):
+    assert resolve_worker_count(PerformanceConfig(workers=workers), cpu_count) == expected
+
+
+@pytest.mark.parametrize(
+    ("ocr", "workers", "cpu_count", "expected"),
+    [
+        (OcrConfig(cpu_threads=5), 4, 64, 5),
+        (OcrConfig(), 1, None, 0),
+        (OcrConfig(), 0, 64, 0),
+        (OcrConfig(), 2, None, 1),
+        (OcrConfig(), 2, 0, 1),
+        (OcrConfig(), 2, 8, 2),
+        (OcrConfig(), 4, 1, 1),
+        (OcrConfig(), 8, 64, 4),
+    ],
+)
+def test_resolve_cpu_threads(ocr, workers, cpu_count, expected):
+    assert resolve_cpu_threads(ocr, workers, cpu_count) == expected
 
 
 def test_toml_overrides(tmp_path):
@@ -55,6 +99,30 @@ def test_toml_overrides(tmp_path):
     p.write_text("[ocr]\ndpi = 300\n", encoding="utf-8")
 
     assert load_config(p).ocr.dpi == 300
+
+
+def test_performance_workers_loads_from_toml(tmp_path):
+    p = tmp_path / "c.toml"
+    p.write_text("[performance]\nworkers = 0\n", encoding="utf-8")
+
+    assert load_config(p).performance.workers == 0
+
+
+@pytest.mark.parametrize("workers", [-1, 9])
+def test_invalid_performance_workers_range_raises(tmp_path, workers):
+    p = tmp_path / "c.toml"
+    p.write_text(f"[performance]\nworkers = {workers}\n", encoding="utf-8")
+
+    with pytest.raises(ConfigError, match="workers"):
+        load_config(p)
+
+
+def test_invalid_performance_workers_type_raises(tmp_path):
+    p = tmp_path / "c.toml"
+    p.write_text('[performance]\nworkers = "2"\n', encoding="utf-8")
+
+    with pytest.raises(ConfigError, match="workers"):
+        load_config(p)
 
 
 def test_output_export_txt_loads_from_toml(tmp_path):
@@ -334,6 +402,7 @@ def test_apply_common_settings_preserves_comments_and_unrelated_keys(tmp_path):
         "\n"
         "[ocr]\n"
         "# dpi comment\n"
+        "engine = \"paddle\"\n"
         "dpi = 200\n"
         "lang = \"chinese_cht\"\n"
         "min_confidence = 0.5\n"
@@ -343,6 +412,9 @@ def test_apply_common_settings_preserves_comments_and_unrelated_keys(tmp_path):
         "[naming]\n"
         "enabled = true\n"
         "fallback_suffix = \"_KEEP\"\n"
+        "\n"
+        "[performance]\n"
+        "workers = 1\n"
         "\n"
         "[llm]\n"
         "provider = \"openai_compatible\"\n"
@@ -363,11 +435,13 @@ def test_apply_common_settings_preserves_comments_and_unrelated_keys(tmp_path):
     cfg = load_config(config_path)
     assert "# root comment" in text
     assert "# dpi comment" in text
+    assert cfg.ocr.engine == "rapidocr"
     assert cfg.ocr.dpi == 300
     assert cfg.ocr.min_confidence == 0.75
     assert cfg.ocr.det_model_name == "PP-OCRv6_mobile_det"
     assert cfg.ocr.rec_model_name == "PP-OCRv6_mobile_rec"
     assert cfg.ocr.lang == "chinese_cht"
+    assert cfg.performance.workers == 3
     assert cfg.naming.enabled is False
     assert cfg.naming.fallback_suffix == "_KEEP"
     assert cfg.llm.provider == "none"
@@ -377,6 +451,31 @@ def test_apply_common_settings_preserves_comments_and_unrelated_keys(tmp_path):
     assert cfg.llm.timeout_seconds == 45.0
     assert cfg.debug.visible_text is True
     assert read_common_settings(config_path) == settings
+
+
+def test_apply_common_settings_creates_performance_section(tmp_path):
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        "[ocr]\n"
+        "engine = \"paddle\"\n"
+        "dpi = 200\n"
+        "\n"
+        "[naming]\n"
+        "enabled = true\n"
+        "\n"
+        "[llm]\n"
+        "provider = \"openai_compatible\"\n",
+        encoding="utf-8",
+    )
+
+    settings = _common_settings(workers=0)
+    apply_common_settings(config_path, settings)
+
+    text = config_path.read_text(encoding="utf-8")
+    cfg = load_config(config_path)
+    assert "[performance]" in text
+    assert cfg.performance.workers == 0
+    assert read_common_settings(config_path).workers == 0
 
 
 def test_apply_common_settings_removes_model_keys_for_medium_defaults(tmp_path):
@@ -417,6 +516,30 @@ def test_apply_common_settings_does_not_write_when_validation_fails(tmp_path):
     assert config_path.read_bytes() == original_bytes
 
 
+def test_apply_common_settings_does_not_write_when_engine_validation_fails(tmp_path):
+    config_path = tmp_path / "config.toml"
+    original = "[ocr]\nengine = \"paddle\"\ndpi = 200\n"
+    config_path.write_text(original, encoding="utf-8")
+    original_bytes = config_path.read_bytes()
+
+    with pytest.raises(ConfigError, match="engine"):
+        apply_common_settings(config_path, replace(_common_settings(), engine="unknown"))
+
+    assert config_path.read_bytes() == original_bytes
+
+
+def test_apply_common_settings_does_not_write_when_workers_validation_fails(tmp_path):
+    config_path = tmp_path / "config.toml"
+    original = "[performance]\nworkers = 1\n"
+    config_path.write_text(original, encoding="utf-8")
+    original_bytes = config_path.read_bytes()
+
+    with pytest.raises(ConfigError, match="workers"):
+        apply_common_settings(config_path, replace(_common_settings(), workers=9))
+
+    assert config_path.read_bytes() == original_bytes
+
+
 def test_apply_common_settings_bootstraps_missing_file_without_example(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     config_path = tmp_path / "nested" / "config.toml"
@@ -424,7 +547,9 @@ def test_apply_common_settings_bootstraps_missing_file_without_example(tmp_path,
     apply_common_settings(config_path, _common_settings())
 
     cfg = load_config(config_path)
+    assert cfg.ocr.engine == "rapidocr"
     assert cfg.ocr.dpi == 300
+    assert cfg.performance.workers == 3
     assert cfg.naming.enabled is False
     assert "[ocr]" in config_path.read_text(encoding="utf-8")
 
@@ -448,5 +573,7 @@ def test_apply_common_settings_bootstraps_missing_file_from_example(tmp_path, mo
     text = config_path.read_text(encoding="utf-8")
     cfg = load_config(config_path)
     assert "# template comment" in text
+    assert cfg.ocr.engine == "rapidocr"
     assert cfg.ocr.dpi == 300
+    assert cfg.performance.workers == 3
     assert cfg.output.subdir_name == "KEEP"

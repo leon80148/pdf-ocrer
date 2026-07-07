@@ -12,6 +12,7 @@ from pdf_ocrer.config import AppConfig, DebugConfig, LlmConfig, NamingConfig, Oc
 from pdf_ocrer.ocr_engine import OcrLine
 from pdf_ocrer.pdf_processor import (
     BatchCancelled,
+    CancelFlag,
     EncryptedPdfError,
     PageReport,
     add_text_layer,
@@ -251,3 +252,23 @@ def test_process_pdf_cancel_raises_between_pages(fixtures_dir) -> None:
 
     with pytest.raises(BatchCancelled):
         process_pdf(fixtures_dir / "scanned.pdf", make_cfg(), FakeEngine([]), cancel=cancel)
+
+
+def test_process_pdf_accepts_duck_typed_cancel_flag(fixtures_dir) -> None:
+    class FakeCancel:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def is_set(self) -> bool:
+            self.calls += 1
+            return False
+
+    cancel: CancelFlag = FakeCancel()
+    line = OcrLine("診斷證明書", px_poly_from_gt(GT_LINES[0]), 0.99)
+
+    result = process_pdf(fixtures_dir / "scanned.pdf", make_cfg(), FakeEngine([line]), cancel=cancel)
+    try:
+        assert result.total_pages == 1
+        assert cancel.calls == 1
+    finally:
+        result.doc.close()

@@ -22,6 +22,7 @@ from pdf_ocrer.config import (
     NamingConfig,
     OcrConfig,
     OutputConfig,
+    PerformanceConfig,
 )
 from pdf_ocrer.llm_providers import LLMError
 from pdf_ocrer.manifest import MANIFEST_NAME
@@ -592,6 +593,34 @@ def test_run_batch_incremental_failed_files_retry_and_write_csv(work_folder: Pat
     assert [result.status for result in second.results] == [FileStatus.FAILED]
     assert first.csv_path is not None
     assert second.csv_path is not None
+
+
+def test_run_batch_workers_gt_one_delegates_to_parallel(tmp_path, monkeypatch) -> None:
+    cfg = make_cfg(performance=PerformanceConfig(workers=2))
+    expected = object()
+    calls: list[tuple[object, ...]] = []
+
+    def fake_run_batch_parallel(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
+        calls.append((args, kwargs))
+        return expected
+
+    monkeypatch.setattr("pdf_ocrer.parallel.run_batch_parallel", fake_run_batch_parallel)
+    engine = FakeEngine()
+    client = StaticClient("unused")
+
+    summary = run_batch(
+        tmp_path,
+        cfg,
+        engine,
+        client,
+        _PROMPT,
+        force=True,
+    )
+
+    assert summary is expected
+    args, kwargs = calls[0]
+    assert args[:5] == (tmp_path, cfg, engine, client, _PROMPT)
+    assert kwargs["force"] is True
 
 
 def test_text_for_naming_uses_page_texts_before_joining_page_breaks() -> None:

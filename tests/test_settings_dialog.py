@@ -38,10 +38,12 @@ def test_dialog_loads_existing_settings(root, tmp_path: Path) -> None:
     config_path = tmp_path / "config.toml"
     _write_config(
         config_path,
+        engine="rapidocr",
         dpi=321,
         min_confidence=0.66,
         det_model_name="PP-OCRv6_tiny_det",
         rec_model_name="PP-OCRv6_tiny_rec",
+        workers=4,
         naming_enabled=False,
         llm_provider="none",
         llm_model="demo-model",
@@ -51,9 +53,11 @@ def test_dialog_loads_existing_settings(root, tmp_path: Path) -> None:
     dialog = _make_dialog(root, config_path)
 
     try:
+        assert dialog.engine_var.get() == "rapidocr"
         assert dialog.dpi_entry.get() == "321"
         assert dialog.min_confidence_entry.get() == "0.66"
         assert dialog.model_size_var.get() == MODEL_SIZE_TINY_LABEL
+        assert dialog.workers_entry.get() == "4"
         assert dialog.naming_enabled_var.get() is False
         assert dialog.llm_provider_entry.get() == "none"
         assert dialog.llm_model_entry.get() == "demo-model"
@@ -127,9 +131,11 @@ def test_valid_save_updates_config_and_closes_dialog(root, tmp_path: Path) -> No
     _write_config(config_path, naming_enabled=False)
     dialog = _make_dialog(root, config_path)
 
+    dialog.engine_var.set("rapidocr")
     _replace_entry_text(dialog.dpi_entry, "275")
     _replace_entry_text(dialog.min_confidence_entry, "0.42")
     dialog.model_size_var.set(MODEL_SIZE_SMALL_LABEL)
+    _replace_entry_text(dialog.workers_entry, "0")
     dialog.naming_enabled_var.set(True)
     _replace_entry_text(dialog.llm_provider_entry, "openai_compatible")
     _replace_entry_text(dialog.llm_model_entry, "saved-model")
@@ -140,10 +146,12 @@ def test_valid_save_updates_config_and_closes_dialog(root, tmp_path: Path) -> No
 
     cfg = load_config(config_path)
     assert _winfo_exists(dialog) == 0
+    assert cfg.ocr.engine == "rapidocr"
     assert cfg.ocr.dpi == 275
     assert cfg.ocr.min_confidence == 0.42
     assert cfg.ocr.det_model_name == "PP-OCRv6_small_det"
     assert cfg.ocr.rec_model_name == "PP-OCRv6_small_rec"
+    assert cfg.performance.workers == 0
     assert cfg.naming.enabled is True
     assert cfg.llm.provider == "openai_compatible"
     assert cfg.llm.model == "saved-model"
@@ -190,10 +198,12 @@ def _make_dialog(root, config_path: Path, open_path=None) -> SettingsDialog:
 def _write_config(
     path: Path,
     *,
+    engine: str = "paddle",
     dpi: int = 200,
     min_confidence: float = 0.5,
     det_model_name: str | None = None,
     rec_model_name: str | None = None,
+    workers: int = 1,
     naming_enabled: bool = True,
     llm_provider: str = "openai_compatible",
     llm_model: str = "qwen3:8b",
@@ -202,6 +212,7 @@ def _write_config(
 ) -> None:
     ocr_lines = [
         "[ocr]",
+        f'engine = "{engine}"',
         f"dpi = {dpi}",
         f"min_confidence = {min_confidence}",
     ]
@@ -213,6 +224,9 @@ def _write_config(
     text = "\n".join(
         [
             *ocr_lines,
+            "",
+            "[performance]",
+            f"workers = {workers}",
             "",
             "[naming]",
             f"enabled = {_toml_bool(naming_enabled)}",

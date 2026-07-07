@@ -67,6 +67,8 @@ def main(
             cfg = replace(cfg, ocr=replace(cfg.ocr, dpi=args.dpi))
         if args.engine is not None:
             cfg = replace(cfg, ocr=replace(cfg.ocr, engine=args.engine))
+        if args.workers is not None:
+            cfg = replace(cfg, performance=replace(cfg.performance, workers=args.workers))
         if args.recursive:
             cfg = replace(cfg, input=replace(cfg.input, recursive=True))
 
@@ -111,6 +113,14 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--no-llm", action="store_true")
     parser.add_argument("--dpi", type=int)
     parser.add_argument("--engine", choices=("paddle", "rapidocr"), default=None)
+    parser.add_argument(
+        "--workers",
+        type=int,
+        choices=range(0, 9),
+        metavar="N",
+        default=None,
+        help="覆寫同時處理檔案數；0=auto，1=循序",
+    )
     parser.add_argument("--recursive", action="store_true", help="遞迴掃描子資料夾")
     parser.add_argument("--force", action="store_true", help="忽略增量記錄，全部重新處理")
     parser.add_argument("--version", action="store_true")

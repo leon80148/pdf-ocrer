@@ -45,6 +45,11 @@ class InputConfig:
 
 
 @dataclass(frozen=True)
+class PerformanceConfig:
+    workers: int = 1
+
+
+@dataclass(frozen=True)
 class NamingConfig:
     enabled: bool = True
     rename_files_with_text: bool = True
@@ -91,6 +96,7 @@ class AppConfig:
     llm: LlmConfig
     debug: DebugConfig
     input: InputConfig = InputConfig()
+    performance: PerformanceConfig = PerformanceConfig()
     gui: GuiConfig = GuiConfig()
     logging: LoggingConfig = LoggingConfig()
 
@@ -101,10 +107,12 @@ class ConfigError(ValueError):
 
 @dataclass(frozen=True)
 class CommonSettings:
+    engine: str = "paddle"
     dpi: int = 200
     min_confidence: float = 0.5
     det_model_name: str | None = None
     rec_model_name: str | None = None
+    workers: int = 1
     naming_enabled: bool = True
     llm_provider: str = "openai_compatible"
     llm_model: str = "qwen3:8b"
@@ -130,6 +138,7 @@ def load_config(path: Path | None = None) -> AppConfig:
         "ocr": OcrConfig,
         "output": OutputConfig,
         "input": InputConfig,
+        "performance": PerformanceConfig,
         "naming": NamingConfig,
         "llm": LlmConfig,
         "debug": DebugConfig,
@@ -155,6 +164,7 @@ def load_config(path: Path | None = None) -> AppConfig:
             llm=_section(section_values, "llm", LlmConfig()),
             debug=_section(section_values, "debug", DebugConfig()),
             input=_section(section_values, "input", InputConfig()),
+            performance=_section(section_values, "performance", PerformanceConfig()),
             gui=_section(section_values, "gui", GuiConfig()),
             logging=_section(section_values, "logging", LoggingConfig()),
         )
@@ -178,10 +188,12 @@ def ensure_config_file(path: Path) -> None:
 def read_common_settings(path: Path) -> CommonSettings:
     cfg = load_config(path)
     return CommonSettings(
+        engine=cfg.ocr.engine,
         dpi=cfg.ocr.dpi,
         min_confidence=cfg.ocr.min_confidence,
         det_model_name=cfg.ocr.det_model_name,
         rec_model_name=cfg.ocr.rec_model_name,
+        workers=cfg.performance.workers,
         naming_enabled=cfg.naming.enabled,
         llm_provider=cfg.llm.provider,
         llm_model=cfg.llm.model,
@@ -192,7 +204,7 @@ def read_common_settings(path: Path) -> CommonSettings:
 
 def apply_common_settings(path: Path, settings: CommonSettings) -> None:
     config_path = Path(path)
-    _validate_common_settings(settings, OcrConfig(), NamingConfig(), LlmConfig())
+    _validate_common_settings(settings, OcrConfig(), NamingConfig(), LlmConfig(), PerformanceConfig())
 
     ensure_config_file(config_path)
 
@@ -202,16 +214,19 @@ def apply_common_settings(path: Path, settings: CommonSettings) -> None:
         raise ConfigError(f"設定檔 TOML 格式錯誤: {exc}") from exc
 
     current = load_config(config_path)
-    _validate_common_settings(settings, current.ocr, current.naming, current.llm)
+    _validate_common_settings(settings, current.ocr, current.naming, current.llm, current.performance)
 
     ocr_table = _ensure_toml_table(doc, "ocr")
+    performance_table = _ensure_toml_table(doc, "performance")
     naming_table = _ensure_toml_table(doc, "naming")
     llm_table = _ensure_toml_table(doc, "llm")
 
+    ocr_table["engine"] = settings.engine
     ocr_table["dpi"] = settings.dpi
     ocr_table["min_confidence"] = settings.min_confidence
     _set_optional_toml_value(ocr_table, "det_model_name", settings.det_model_name)
     _set_optional_toml_value(ocr_table, "rec_model_name", settings.rec_model_name)
+    performance_table["workers"] = settings.workers
     naming_table["enabled"] = settings.naming_enabled
     llm_table["provider"] = settings.llm_provider
     llm_table["model"] = settings.llm_model
@@ -226,15 +241,18 @@ def _validate_common_settings(
     ocr_base: OcrConfig,
     naming_base: NamingConfig,
     llm_base: LlmConfig,
+    performance_base: PerformanceConfig,
 ) -> None:
     ocr = replace(
         ocr_base,
+        engine=settings.engine,
         dpi=settings.dpi,
         min_confidence=settings.min_confidence,
         det_model_name=settings.det_model_name,
         rec_model_name=settings.rec_model_name,
     )
     naming = replace(naming_base, enabled=settings.naming_enabled)
+    performance = replace(performance_base, workers=settings.workers)
     llm = replace(
         llm_base,
         provider=settings.llm_provider,
@@ -245,10 +263,26 @@ def _validate_common_settings(
     _validate_ocr(ocr)
     _validate_naming(naming)
     _validate_llm(llm)
+    _validate_performance(performance)
 
 
 def resolve_api_key(cfg: LlmConfig) -> str:
     return cfg.api_key or os.environ.get("PDF_OCRER_API_KEY", "")
+
+
+def resolve_worker_count(perf: PerformanceConfig, cpu_count: int | None) -> int:
+    if perf.workers >= 1:
+        return min(perf.workers, 8)
+
+    return min(3, max(1, (cpu_count or 2) // 4))
+
+
+def resolve_cpu_threads(ocr: OcrConfig, workers: int, cpu_count: int | None) -> int:
+    if ocr.cpu_threads > 0:
+        return ocr.cpu_threads
+    if workers > 1:
+        return max(1, (cpu_count or 2) // (2 * workers))
+    return 0
 
 
 def _ensure_toml_table(
@@ -308,6 +342,7 @@ def _validate(cfg: AppConfig) -> AppConfig:
         ocr=ocr,
         output=output,
         input=_validate_input(cfg.input),
+        performance=_validate_performance(cfg.performance),
         gui=_validate_gui(cfg.gui),
         logging=_validate_logging(cfg.logging),
     )
@@ -358,6 +393,13 @@ def _validate_input(cfg: InputConfig) -> InputConfig:
     if image_extensions == cfg.image_extensions:
         return cfg
     return replace(cfg, image_extensions=image_extensions)
+
+
+def _validate_performance(cfg: PerformanceConfig) -> PerformanceConfig:
+    _require_int("workers", cfg.workers)
+    if not 0 <= cfg.workers <= 8:
+        _range_error("workers", "0–8")
+    return cfg
 
 
 def _normalize_image_extensions(value: object) -> tuple[str, ...]:

@@ -45,6 +45,10 @@ recursive = false
 # 圖片輸入副檔名清單；支援 jpg/jpeg/png/tif/tiff。設為 [] 可停用圖片輸入。
 image_extensions = ["jpg", "jpeg", "png", "tif", "tiff"]
 
+[performance]
+# 同時處理檔案數。1=循序（預設）；0=自動（約核心數/4，上限3）；>1 指定。每個 worker 各載一份 OCR 模型：rapidocr 約 0.7GB、paddle 約 1.3~2.5GB
+workers = 1
+
 [logging]
 # 是否寫入檔案日誌。預設：true。
 enabled = true

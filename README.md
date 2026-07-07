@@ -118,6 +118,8 @@ each file is processed. You can choose a folder with the button or drag a folder
 onto the window; if `tkinterdnd2` is unavailable, drag-and-drop is disabled
 gracefully and normal folder selection still works. The theme switcher supports
 system, light, and dark appearances, defaulting from `[gui] appearance`. The
+settings window exposes OCR engine, DPI, confidence threshold, model size,
+parallel worker count, LLM naming, and common LLM connection fields. The
 `完成後開啟對照表` checkbox is on by default and opens the CSV audit table when
 the batch completes. `全部重新處理` ignores the incremental manifest for that run.
 
@@ -129,6 +131,7 @@ pdf-ocrer <folder>
   --no-llm        Force fallback naming, regardless of config.
   --dpi N         Override OCR render DPI.
   --engine NAME   Override OCR engine for this run: paddle or rapidocr.
+  --workers N     Override parallel file workers. 0=auto, 1=sequential.
   --recursive     Scan subfolders and mirror their structure under the output folder.
   --force         Ignore the incremental manifest and reprocess every input.
   --version       Print the version.
@@ -231,6 +234,7 @@ Important settings:
 | `[output]` | `incremental = true` | Skip manifest-matched completed files on repeat runs. Use `--force` for one run. |
 | `[input]` | `recursive = false` | Set true to scan subfolders and mirror them under the output folder. |
 | `[input]` | `image_extensions = ["jpg", "jpeg", "png", "tif", "tiff"]` | Image extensions accepted as inputs. Set `[]` to process PDFs only. |
+| `[performance]` | `workers = 1` | Parallel file workers. `1` is sequential and default; `0` auto-selects up to 3; `2` to `8` force a count. |
 | `[naming]` | `prompt_file = "naming_prompt.txt"` | User-editable prompt for output names. |
 | `[naming]` | `max_chars_to_llm = 3000` | Maximum OCR text characters sent to the naming LLM. |
 | `[llm]` | `provider = "openai_compatible"` | Default generic provider. |
@@ -351,6 +355,22 @@ rec_model_name = "PP-OCRv6_small_rec"
 
 Tiny models may be faster if your PaddleOCR installation provides them, with the
 usual accuracy tradeoff.
+
+Parallel processing is configured with:
+
+```toml
+[performance]
+workers = 1
+```
+
+The default is sequential because each worker loads its own OCR model. As a
+rough memory budget, RapidOCR is about 0.7 GB per worker and PaddleOCR is about
+1.3 to 2.5 GB per worker. Use parallel workers mainly for batches of six or more
+files, and start with `workers = 2` on typical clinic PCs. `workers = 0`
+auto-selects about one worker per four CPU cores, capped at 3.
+If you manually set `cpu_threads`, every parallel worker uses that value
+(total threads are roughly `workers × cpu_threads`), so keep `cpu_threads = 0`
+in parallel mode to let the app distribute threads automatically.
 
 ## Known Limitations
 

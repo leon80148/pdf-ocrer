@@ -13,10 +13,10 @@ orientation on `/Rotate` pages.
 from __future__ import annotations
 
 import math
-import threading
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Protocol
 
 import numpy as np
 import pymupdf
@@ -34,6 +34,10 @@ class EncryptedPdfError(Exception):
 
 class BatchCancelled(Exception):
     """Raised when the caller cancels processing between pages."""
+
+
+class CancelFlag(Protocol):
+    def is_set(self) -> bool: ...
 
 
 def open_document(src: Path) -> pymupdf.Document:
@@ -125,7 +129,7 @@ def process_pdf(
     cfg: AppConfig,
     engine: OcrEngineProtocol,
     page_cb: Callable[[int, int], None] | None = None,
-    cancel: threading.Event | None = None,
+    cancel: CancelFlag | None = None,
 ) -> PdfResult:
     doc = open_document(src)
     try:

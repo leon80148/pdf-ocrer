@@ -121,6 +121,52 @@ def test_main_engine_override_passes_to_engine_factory(work_folder, tmp_path) ->
     assert captured == {"engine": "rapidocr"}
 
 
+def test_main_workers_override_passes_to_run_batch(tmp_path, monkeypatch) -> None:
+    folder = tmp_path / "input"
+    folder.mkdir()
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        "[performance]\n"
+        "workers = 1\n"
+        "[naming]\n"
+        "enabled = false\n",
+        encoding="utf-8",
+    )
+    captured: dict[str, object] = {}
+
+    def fake_run_batch(folder_arg, cfg, engine, client, prompt_template, **kwargs):  # noqa: ANN001, ANN003
+        captured["workers"] = cfg.performance.workers
+        output_dir = folder_arg / cfg.output.subdir_name
+        return BatchSummary(
+            results=[
+                FileResult(
+                    source=folder_arg / "a.pdf",
+                    output=output_dir / "a_OCR.pdf",
+                    status=FileStatus.SUCCESS_OCR,
+                    total_pages=1,
+                    ocr_pages=1,
+                    naming_source="none",
+                    note="",
+                    rel="a.pdf",
+                )
+            ],
+            csv_path=None,
+            output_dir=output_dir,
+            cancelled=False,
+        )
+
+    monkeypatch.setattr("pdf_ocrer.cli.run_batch", fake_run_batch)
+
+    exit_code = main(
+        [str(folder), "--config", str(config_path), "--workers", "0"],
+        engine_factory=lambda ocr_cfg: FakeEngine(),
+        client_factory=lambda llm_cfg: None,
+    )
+
+    assert exit_code == 0
+    assert captured == {"workers": 0}
+
+
 def test_main_recursive_flag_overrides_input_config(tmp_path, monkeypatch) -> None:
     folder = tmp_path / "input"
     folder.mkdir()

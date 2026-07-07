@@ -82,17 +82,27 @@ class SettingsDialog(ctk.CTkToplevel):
     def _build_ocr_section(self, settings: CommonSettings) -> None:
         frame = self._section_frame("OCR", row=0)
 
-        self._label(frame, "DPI", row=0)
+        self._label(frame, "OCR 引擎", row=0)
+        self.engine_var = tk.StringVar(master=self, value=settings.engine)
+        self.engine_menu = ctk.CTkOptionMenu(
+            frame,
+            values=["paddle", "rapidocr"],
+            variable=self.engine_var,
+        )
+        self.engine_menu.grid(row=1, column=1, sticky="ew", padx=(8, 12), pady=4)
+        self.engine_menu.set(settings.engine)
+
+        self._label(frame, "DPI", row=1)
         self.dpi_entry = ctk.CTkEntry(frame)
-        self.dpi_entry.grid(row=1, column=1, sticky="ew", padx=(8, 12), pady=4)
+        self.dpi_entry.grid(row=2, column=1, sticky="ew", padx=(8, 12), pady=4)
         self._set_entry_text(self.dpi_entry, str(settings.dpi))
 
-        self._label(frame, "最低信心分數", row=1)
+        self._label(frame, "最低信心分數", row=2)
         self.min_confidence_entry = ctk.CTkEntry(frame)
-        self.min_confidence_entry.grid(row=2, column=1, sticky="ew", padx=(8, 12), pady=4)
+        self.min_confidence_entry.grid(row=3, column=1, sticky="ew", padx=(8, 12), pady=4)
         self._set_entry_text(self.min_confidence_entry, str(settings.min_confidence))
 
-        self._label(frame, "模型大小", row=2)
+        self._label(frame, "模型大小", row=3)
         model_label = model_size_label_for_pair(settings.det_model_name, settings.rec_model_name)
         self.model_size_var = tk.StringVar(master=self, value=model_label)
         self.model_size_menu = ctk.CTkOptionMenu(
@@ -100,8 +110,16 @@ class SettingsDialog(ctk.CTkToplevel):
             values=model_size_dropdown_values(settings.det_model_name, settings.rec_model_name),
             variable=self.model_size_var,
         )
-        self.model_size_menu.grid(row=3, column=1, sticky="ew", padx=(8, 12), pady=(4, 12))
+        self.model_size_menu.grid(row=4, column=1, sticky="ew", padx=(8, 12), pady=4)
         self.model_size_menu.set(model_label)
+
+        self._label(frame, "同時處理檔案數", row=4)
+        self.workers_entry = ctk.CTkEntry(frame)
+        self.workers_entry.grid(row=5, column=1, sticky="ew", padx=(8, 12), pady=4)
+        self._set_entry_text(self.workers_entry, str(settings.workers))
+
+        self.workers_help_label = ctk.CTkLabel(frame, text="0=自動、1=循序", anchor="w")
+        self.workers_help_label.grid(row=6, column=1, sticky="w", padx=(8, 12), pady=(0, 12))
 
     def _build_naming_section(self, settings: CommonSettings) -> None:
         frame = self._section_frame("命名", row=1)
@@ -186,10 +204,12 @@ class SettingsDialog(ctk.CTkToplevel):
                 current=self._current_model_pair,
             )
             settings = CommonSettings(
+                engine=self.engine_var.get(),
                 dpi=int(self.dpi_entry.get().strip()),
                 min_confidence=float(self.min_confidence_entry.get().strip()),
                 det_model_name=det_model_name,
                 rec_model_name=rec_model_name,
+                workers=int(self.workers_entry.get().strip()),
                 naming_enabled=bool(self.naming_enabled_var.get()),
                 llm_provider=self.llm_provider_entry.get(),
                 llm_model=self.llm_model_entry.get(),
