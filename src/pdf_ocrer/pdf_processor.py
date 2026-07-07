@@ -36,6 +36,18 @@ class BatchCancelled(Exception):
     """Raised when the caller cancels processing between pages."""
 
 
+def open_document(src: Path) -> pymupdf.Document:
+    if src.suffix.removeprefix(".").casefold() == "pdf":
+        return pymupdf.open(src)
+
+    image_doc = pymupdf.open(src)
+    try:
+        pdf_bytes = image_doc.convert_to_pdf()
+    finally:
+        image_doc.close()
+    return pymupdf.open("pdf", pdf_bytes)
+
+
 def has_text_layer(page: pymupdf.Page, min_chars: int) -> bool:
     return len(page.get_text().strip()) >= min_chars
 
@@ -115,7 +127,7 @@ def process_pdf(
     page_cb: Callable[[int, int], None] | None = None,
     cancel: threading.Event | None = None,
 ) -> PdfResult:
-    doc = pymupdf.open(src)
+    doc = open_document(src)
     try:
         if doc.needs_pass:
             doc.authenticate("")

@@ -36,6 +36,14 @@ subdir_name = "OCR輸出"
 csv_prefix = "對照表"
 # 每檔輸出 PDF 之外另存 .txt 純文字（utf-8-sig）。預設：false。
 export_txt = false
+# 增量處理：跳過 manifest 記錄且輸出仍存在的已完成檔。預設 true
+incremental = true
+
+[input]
+# 是否掃描子資料夾（輸出鏡像原資料夾結構）。預設 false
+recursive = false
+# 圖片輸入副檔名清單；支援 jpg/jpeg/png/tif/tiff。設為 [] 可停用圖片輸入。
+image_extensions = ["jpg", "jpeg", "png", "tif", "tiff"]
 
 [logging]
 # 是否寫入檔案日誌。預設：true。

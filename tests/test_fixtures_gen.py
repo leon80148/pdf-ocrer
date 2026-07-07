@@ -3,7 +3,7 @@ from __future__ import annotations
 import pymupdf
 import pytest
 
-from fixtures_gen import GT_LINES, build_all
+from fixtures_gen import GT_LINES, build_all, build_image_jpg, build_image_png, build_tiff_multipage
 
 
 def test_build_all_creates_expected_fixture_files(tmp_path):
@@ -67,3 +67,29 @@ def test_mixed_has_scanned_then_native_text(fixtures_dir):
 def test_corrupt_file_is_not_openable(fixtures_dir):
     with pytest.raises(pymupdf.FileDataError):
         pymupdf.open(fixtures_dir / "corrupt.pdf")
+
+
+@pytest.mark.parametrize(
+    ("builder", "filename"),
+    [(build_image_png, "scan.png"), (build_image_jpg, "scan.jpg")],
+)
+def test_image_fixtures_convert_to_single_page_pdf(tmp_path, builder, filename: str):
+    path = tmp_path / filename
+    builder(path)
+
+    image_doc = pymupdf.open(path)
+    pdf_doc = pymupdf.open("pdf", image_doc.convert_to_pdf())
+
+    assert pdf_doc.page_count == 1
+    assert abs(pdf_doc[0].rect.width - 595) < 2
+    assert abs(pdf_doc[0].rect.height - 842) < 2
+
+
+def test_tiff_fixture_converts_to_two_page_pdf(tmp_path):
+    path = tmp_path / "scan.tiff"
+    build_tiff_multipage(path)
+
+    image_doc = pymupdf.open(path)
+    pdf_doc = pymupdf.open("pdf", image_doc.convert_to_pdf())
+
+    assert pdf_doc.page_count == 2

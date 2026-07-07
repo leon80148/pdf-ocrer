@@ -2,14 +2,15 @@
 
 Primary user guide: [繁體中文 README](README.zh-TW.md)
 
-pdf-ocrer batch-converts scanned PDFs in a folder into searchable dual-layer PDFs.
-It keeps the original page image, adds an invisible text layer with PP-OCRv6 via
-the selected OCR engine, and can rename each output file with any
-OpenAI-compatible LLM using the editable `naming_prompt.txt` prompt.
+pdf-ocrer batch-converts scanned PDFs and supported image files in a folder into
+searchable dual-layer PDFs. It keeps the original page image, adds an invisible
+text layer with PP-OCRv6 via the selected OCR engine, and can rename each output
+file with any OpenAI-compatible LLM using the editable `naming_prompt.txt`
+prompt.
 
-Original PDFs are never modified. Outputs are written to an `OCR輸出` subfolder
-with a timestamped CSV audit table encoded as `utf-8-sig`, so Excel opens it
-cleanly.
+Original PDFs are never modified. Outputs are written to an `OCR輸出` subfolder.
+When a run processes new files, it also writes a timestamped CSV audit table
+encoded as `utf-8-sig`, so Excel opens it cleanly.
 
 ## Status
 
@@ -22,12 +23,15 @@ The project is source-install first until a package is published. Do not assume
 
 ## What It Does
 
-- Converts every PDF directly inside a selected folder, non-recursively.
+- Converts every PDF, JPG, PNG, or TIFF directly inside a selected folder by
+  default, with optional recursive subfolder scanning.
 - Adds an invisible searchable text layer to scanned pages.
 - Preserves pages that already have a text layer.
 - Names output PDFs from OCR text using `naming_prompt.txt`.
 - Supports local and cloud OpenAI-compatible LLM endpoints.
-- Records every processed, skipped, or failed file in a CSV audit table.
+- Records every newly processed, encrypted-skipped, or failed file in a CSV
+  audit table.
+- Skips already completed files on repeat runs when the manifest still matches.
 - Skips password-protected PDFs and records them in the CSV instead of stopping
   the batch.
 
@@ -115,7 +119,7 @@ onto the window; if `tkinterdnd2` is unavailable, drag-and-drop is disabled
 gracefully and normal folder selection still works. The theme switcher supports
 system, light, and dark appearances, defaulting from `[gui] appearance`. The
 `完成後開啟對照表` checkbox is on by default and opens the CSV audit table when
-the batch completes.
+the batch completes. `全部重新處理` ignores the incremental manifest for that run.
 
 CLI flags:
 
@@ -125,6 +129,8 @@ pdf-ocrer <folder>
   --no-llm        Force fallback naming, regardless of config.
   --dpi N         Override OCR render DPI.
   --engine NAME   Override OCR engine for this run: paddle or rapidocr.
+  --recursive     Scan subfolders and mirror their structure under the output folder.
+  --force         Ignore the incremental manifest and reprocess every input.
   --version       Print the version.
 ```
 
@@ -134,7 +140,7 @@ Exit codes:
 |---:|---|
 | 0 | All files completed successfully, or GUI/version command completed. |
 | 1 | Configuration error or at least one file failed. |
-| 2 | Folder is missing, not a directory, or contains no PDFs. |
+| 2 | Folder is missing, not a directory, or contains no supported PDF/image inputs. |
 
 Progress is printed to stdout, for example:
 
@@ -142,7 +148,7 @@ Progress is printed to stdout, for example:
 [3/12] scan.pdf 第 5/20 頁
 ```
 
-The final summary table includes the CSV path.
+The final summary table includes the CSV path when a new CSV was written.
 
 ## Output
 
@@ -160,6 +166,29 @@ C:\Scans\OCR輸出\
   <renamed searchable PDFs>.pdf
 ```
 
+By default, only supported inputs directly inside `C:\Scans` are processed:
+PDF plus JPG/JPEG/PNG/TIF/TIFF images. Image inputs are converted through MuPDF
+and always written as searchable `.pdf` outputs; multi-page TIFF files keep
+their page count. If an image has no DPI metadata, MuPDF assumes 96dpi.
+
+Enable recursive scanning with:
+
+```powershell
+pdf-ocrer "C:\Scans" --recursive
+```
+
+or:
+
+```toml
+[input]
+recursive = true
+```
+
+When recursive scanning is enabled, output folders mirror the input subfolder
+structure. For example, `C:\Scans\2026\scan.pdf` writes under
+`C:\Scans\OCR輸出\2026\...`, and the CSV records `2026/scan.pdf` as the source
+path. Any folder named the configured output subfolder, at any depth, is skipped.
+
 CSV columns:
 
 ```text
@@ -168,6 +197,18 @@ CSV columns:
 
 The CSV is appended and flushed after each file, so completed rows remain even if
 a long batch is interrupted.
+
+Incremental processing is enabled by default. pdf-ocrer stores
+`.pdf_ocrer_manifest.json` in the output folder and skips inputs whose size and
+mtime match a previous successful output, or a previous encrypted-skip record.
+Skipped-done files show as `已處理-跳過` in the CLI/GUI summary and are not written
+to a new CSV. If a whole repeat run has no newly processed files, no CSV is
+created. Use `--force` for one run, or disable the behavior with:
+
+```toml
+[output]
+incremental = false
+```
 
 ## Configuration
 
@@ -187,6 +228,9 @@ Important settings:
 | `[ocr]` | `enable_mkldnn = false` | Keep false with PaddlePaddle 3.3.x; PaddlePaddle 3.2.x can enable it for speed. |
 | `[ocr]` | `det_model_name`, `rec_model_name` | Use small or tiny PP-OCRv6 models for speed tuning. |
 | `[output]` | `subdir_name = "OCR輸出"` | Output folder name. |
+| `[output]` | `incremental = true` | Skip manifest-matched completed files on repeat runs. Use `--force` for one run. |
+| `[input]` | `recursive = false` | Set true to scan subfolders and mirror them under the output folder. |
+| `[input]` | `image_extensions = ["jpg", "jpeg", "png", "tif", "tiff"]` | Image extensions accepted as inputs. Set `[]` to process PDFs only. |
 | `[naming]` | `prompt_file = "naming_prompt.txt"` | User-editable prompt for output names. |
 | `[naming]` | `max_chars_to_llm = 3000` | Maximum OCR text characters sent to the naming LLM. |
 | `[llm]` | `provider = "openai_compatible"` | Default generic provider. |
@@ -315,7 +359,7 @@ usual accuracy tradeoff.
 - Skewed text lines are searchable, but highlights can be slightly offset because
   v1 inserts an axis-aligned text layer.
 - Password-protected PDFs are skipped and recorded in the CSV.
-- The batch is non-recursive. PDFs in subfolders are not scanned.
+- Images without DPI metadata use MuPDF's 96dpi page-size assumption.
 - GPU support is not claimed. The `ocr.device` config field exists, but CPU is
   the tested path.
 - PaddlePaddle 3.3.x cannot use the MKLDNN/oneDNN path reliably; use the

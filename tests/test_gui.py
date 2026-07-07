@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import queue
+import threading
 import time
 from pathlib import Path
 
@@ -92,8 +94,47 @@ def test_file_done_event_updates_status_table(app: App, tmp_path: Path) -> None:
     assert values == ("原檔.pdf", FileStatus.SUCCESS_OCR.value, "新檔.pdf", "3")
 
 
+def test_file_done_event_uses_rel_for_same_basename_rows(app: App, tmp_path: Path) -> None:
+    first = FileResult(
+        source=tmp_path / "alpha" / "same.pdf",
+        output=tmp_path / "OCR輸出" / "alpha" / "same_OCR.pdf",
+        status=FileStatus.SUCCESS_OCR,
+        total_pages=1,
+        ocr_pages=1,
+        naming_source="none",
+        note="",
+        rel="alpha/same.pdf",
+    )
+    second = FileResult(
+        source=tmp_path / "beta" / "same.pdf",
+        output=tmp_path / "OCR輸出" / "beta" / "same_OCR.pdf",
+        status=FileStatus.SUCCESS_OCR,
+        total_pages=1,
+        ocr_pages=1,
+        naming_source="none",
+        note="",
+        rel="beta/same.pdf",
+    )
+
+    app._queue.put(("file_done", first))
+    app._queue.put(("file_done", second))
+    app._drain_queue()
+
+    rows = app.file_tree.get_children()
+    assert len(rows) == 2
+    values = [app.file_tree.item(row, "values") for row in rows]
+    assert values == [
+        ("alpha/same.pdf", FileStatus.SUCCESS_OCR.value, "alpha/same_OCR.pdf", "1"),
+        ("beta/same.pdf", FileStatus.SUCCESS_OCR.value, "beta/same_OCR.pdf", "1"),
+    ]
+
+
 def test_auto_csv_checkbox_defaults_checked(app: App) -> None:
     assert app.auto_csv_var.get() is True
+
+
+def test_force_checkbox_defaults_unchecked(app: App) -> None:
+    assert app.force_var.get() is False
 
 
 def test_theme_switch_calls_customtkinter(app: App, monkeypatch) -> None:
@@ -170,6 +211,110 @@ def test_create_engine_delegates_to_default_factory(monkeypatch: pytest.MonkeyPa
     assert captured == {"cfg": cfg, "log": log_cb}
 
 
+def test_worker_passes_force_checkbox_to_run_batch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    folder = tmp_path / "input"
+    folder.mkdir()
+    config_path = tmp_path / "config.toml"
+    config_path.write_text("[naming]\nenabled = false\n", encoding="utf-8")
+    captured: dict[str, object] = {}
+    app = App.__new__(App)
+    app._config_path = config_path
+    app._queue = queue.Queue()
+    app._client_factory = None
+    app.force_var = _StaticBool(True)
+    app._create_engine = lambda cfg, log_cb: object()  # type: ignore[method-assign]
+
+    def fake_run_batch(folder_arg, cfg, engine, client, prompt_template, **kwargs):  # noqa: ANN001, ANN003
+        captured["force"] = kwargs.get("force")
+        output_dir = folder_arg / cfg.output.subdir_name
+        return BatchSummary([], None, output_dir, False)
+
+    monkeypatch.setattr("pdf_ocrer.gui.run_batch", fake_run_batch)
+
+    app._run_worker(folder, threading.Event())
+
+    assert captured == {"force": True}
+    assert app._queue.get_nowait()[0] == "done"
+
+
+def test_completion_message_includes_incremental_skip_count(tmp_path: Path) -> None:
+    output_dir = tmp_path / "OCR輸出"
+    summary = BatchSummary(
+        results=[
+            FileResult(
+                source=tmp_path / "done.pdf",
+                output=output_dir / "done_OCR.pdf",
+                status=FileStatus.SKIPPED_DONE,
+                total_pages=0,
+                ocr_pages=0,
+                naming_source="manifest",
+                note="",
+                rel="done.pdf",
+            )
+        ],
+        csv_path=None,
+        output_dir=output_dir,
+        cancelled=False,
+    )
+    app = App.__new__(App)
+    app._closed = False
+
+    message = app._completion_message(summary)
+
+    assert "已跳過（先前已處理）：1" in message
+    assert "本次無新處理檔案" in message
+
+
+def test_completion_message_cancelled_without_csv_keeps_cancel_wording(tmp_path: Path) -> None:
+    summary = BatchSummary(
+        results=[],
+        csv_path=None,
+        output_dir=tmp_path / "OCR輸出",
+        cancelled=True,
+    )
+    app = App.__new__(App)
+    app._closed = False
+
+    message = app._completion_message(summary)
+
+    assert "狀態：已取消" in message
+    assert "本次無新處理檔案" not in message
+
+
+def test_done_with_no_csv_does_not_open_path(app: App, tmp_path: Path) -> None:
+    opened: list[Path] = []
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(app, "_open_path", opened.append)
+    try:
+        summary = BatchSummary(
+            results=[
+                FileResult(
+                    source=tmp_path / "done.pdf",
+                    output=tmp_path / "OCR輸出" / "done_OCR.pdf",
+                    status=FileStatus.SKIPPED_DONE,
+                    total_pages=0,
+                    ocr_pages=0,
+                    naming_source="manifest",
+                    note="",
+                    rel="done.pdf",
+                )
+            ],
+            csv_path=None,
+            output_dir=tmp_path / "OCR輸出",
+            cancelled=False,
+        )
+
+        app._queue.put(("done", summary))
+        app._drain_queue()
+
+        assert opened == []
+    finally:
+        monkeypatch.undo()
+
+
 def test_worker_thread_is_not_daemon(app: App, work_folder: Path, monkeypatch) -> None:
     _keep_only(work_folder, {"native.pdf"})
     monkeypatch.setattr("pdf_ocrer.gui.messagebox.askyesno", lambda *args, **kwargs: False)
@@ -203,3 +348,11 @@ def _keep_only(folder: Path, names: set[str]) -> None:
     for path in folder.iterdir():
         if path.is_file() and path.name not in names:
             path.unlink()
+
+
+class _StaticBool:
+    def __init__(self, value: bool) -> None:
+        self._value = value
+
+    def get(self) -> bool:
+        return self._value

@@ -8,8 +8,10 @@ import pytest
 from pdf_ocrer.config import (
     CommonSettings,
     ConfigError,
+    InputConfig,
     LlmConfig,
     LoggingConfig,
+    OutputConfig,
     apply_common_settings,
     ensure_config_file,
     load_config,
@@ -43,6 +45,7 @@ def test_defaults_when_no_file(tmp_path):
     assert cfg.ocr.textline_orientation is True
     assert cfg.llm.provider == "openai_compatible"
     assert cfg.output.export_txt is False
+    assert cfg.input == InputConfig()
     assert cfg.gui.appearance == "system"
     assert cfg.logging == LoggingConfig()
 
@@ -61,11 +64,75 @@ def test_output_export_txt_loads_from_toml(tmp_path):
     assert load_config(p).output.export_txt is True
 
 
+def test_output_incremental_defaults_enabled() -> None:
+    assert OutputConfig().incremental is True
+
+
+def test_output_incremental_loads_from_toml(tmp_path):
+    p = tmp_path / "c.toml"
+    p.write_text("[output]\nincremental = false\n", encoding="utf-8")
+
+    assert load_config(p).output.incremental is False
+
+
+def test_input_recursive_loads_from_toml(tmp_path):
+    p = tmp_path / "c.toml"
+    p.write_text("[input]\nrecursive = true\n", encoding="utf-8")
+
+    assert load_config(p).input.recursive is True
+
+
+def test_input_image_extensions_defaults() -> None:
+    assert InputConfig().image_extensions == ("jpg", "jpeg", "png", "tif", "tiff")
+
+
+def test_input_image_extensions_loads_and_normalizes_from_toml(tmp_path):
+    p = tmp_path / "c.toml"
+    p.write_text(
+        "[input]\n"
+        'image_extensions = [".JPG", "png", "jpg", "Tiff"]\n',
+        encoding="utf-8",
+    )
+
+    assert load_config(p).input.image_extensions == ("jpg", "png", "tiff")
+
+
+def test_input_image_extensions_empty_list_disables_images(tmp_path):
+    p = tmp_path / "c.toml"
+    p.write_text("[input]\nimage_extensions = []\n", encoding="utf-8")
+
+    assert load_config(p).input.image_extensions == ()
+
+
+def test_invalid_input_image_extensions_item_type_raises(tmp_path):
+    p = tmp_path / "c.toml"
+    p.write_text("[input]\nimage_extensions = [123]\n", encoding="utf-8")
+
+    with pytest.raises(ConfigError, match="image_extensions"):
+        load_config(p)
+
+
+def test_invalid_input_recursive_type_raises(tmp_path):
+    p = tmp_path / "c.toml"
+    p.write_text('[input]\nrecursive = "yes"\n', encoding="utf-8")
+
+    with pytest.raises(ConfigError, match="recursive"):
+        load_config(p)
+
+
 def test_invalid_output_export_txt_type_raises(tmp_path):
     p = tmp_path / "c.toml"
     p.write_text('[output]\nexport_txt = "yes"\n', encoding="utf-8")
 
     with pytest.raises(ConfigError, match="export_txt"):
+        load_config(p)
+
+
+def test_invalid_output_incremental_type_raises(tmp_path):
+    p = tmp_path / "c.toml"
+    p.write_text('[output]\nincremental = "yes"\n', encoding="utf-8")
+
+    with pytest.raises(ConfigError, match="incremental"):
         load_config(p)
 
 

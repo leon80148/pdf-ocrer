@@ -35,7 +35,7 @@ dependencies = [
 [project.optional-dependencies]
 paddle-cpu = ["paddlepaddle==3.2.*"]
 rapidocr = ["rapidocr>=3.9", "onnxruntime>=1.19"]
-dev = ["pytest>=8", "ruff", "psutil"]
+dev = ["pytest>=8", "ruff", "psutil", "pillow"]
 
 [project.scripts]
 pdf-ocrer = "pdf_ocrer.cli:main"

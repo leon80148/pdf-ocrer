@@ -3,18 +3,20 @@
 English developer README: [README.md](README.md)
 
 pdf-ocrer 是給診所行政人員使用的批次 OCR 工具。你選一個資料夾，它會把裡面的掃描
-PDF 轉成可搜尋的雙層 PDF：原本的影像保留不動，另外加上一層看不見的文字。
+PDF 與支援的圖片檔轉成可搜尋的雙層 PDF：原本的影像保留不動，另外加上一層看不見的文字。
 
 它也可以讀取 OCR 文字，請本機或雲端的 OpenAI 相容 LLM 依照
 `naming_prompt.txt` 自動命名輸出檔。原始檔案絕不修改，所有結果都放在
-`OCR輸出` 子資料夾，並產生 Excel 可直接開啟的 CSV 對照表。
+`OCR輸出` 子資料夾；本次有新處理檔案時，會產生 Excel 可直接開啟的 CSV 對照表。
 
 ## 你會得到什麼
 
-- 掃描 PDF 變成可以 Ctrl+F 搜尋的 PDF。
+- 掃描 PDF、JPG、PNG、TIFF 變成可以 Ctrl+F 搜尋的 PDF。
+- 預設只處理所選資料夾第一層；也可啟用遞迴掃描子資料夾。
 - 輸出檔依文件內容自動命名。
 - 原始 PDF 留在原資料夾，不會被覆蓋。
-- 每次批次都有 `對照表_YYYYMMDD_HHMMSS.csv`，方便回查原檔名、新檔名和處理狀態。
+- 本次有新處理檔案時，會產生 `對照表_YYYYMMDD_HHMMSS.csv`，方便回查原檔名、新檔名和處理狀態。
+- 重複執行同一資料夾時，預設會跳過 manifest 已記錄且輸出仍存在的完成檔。
 - 加密 PDF 不會讓整批中斷，會被略過並記錄在 CSV。
 
 ## 安裝前準備
@@ -70,7 +72,7 @@ python -m pip install "pdf-ocrer[paddle-cpu]"
 
 ## 最簡單的使用方式
 
-1. 把要處理的 PDF 放在同一個資料夾。
+1. 把要處理的 PDF 或圖片放在同一個資料夾。
 2. 開啟命令列，啟動圖形介面：
 
    ```powershell
@@ -92,17 +94,19 @@ pdf-ocrer "C:\Scans"
 按鈕選資料夾，也可以把資料夾拖放到視窗上；如果系統無法使用 `tkinterdnd2`，拖放功能
 會自動關閉，仍可用一般選取資料夾方式操作。介面可切換系統、淺色、深色主題，預設值
 來自 `config.toml` 的 `[gui] appearance`。`完成後開啟對照表` 預設勾選，批次完成後會
-自動開啟 CSV 對照表。
+自動開啟 CSV 對照表；`全部重新處理` 可在該次執行忽略增量記錄。
 
 ## 命令列選項
 
 ```text
 pdf-ocrer                     # 不加資料夾，啟動 GUI
-pdf-ocrer <folder>            # 批次處理資料夾裡的 PDF
+pdf-ocrer <folder>            # 批次處理資料夾裡的 PDF/圖片
   --config PATH               # 指定 config.toml
   --no-llm                    # 不使用 LLM 命名
   --dpi N                     # 指定 OCR 解析度
   --engine NAME               # 本次執行覆寫 OCR 引擎：paddle 或 rapidocr
+  --recursive                 # 掃描子資料夾，並在輸出資料夾鏡像原結構
+  --force                     # 忽略增量記錄，全部重新處理
   --version                   # 顯示版本
 ```
 
@@ -112,7 +116,7 @@ pdf-ocrer <folder>            # 批次處理資料夾裡的 PDF
 |---:|---|
 | 0 | 全部成功，或 GUI / 版本指令正常結束。 |
 | 1 | 設定錯誤，或至少一個檔案失敗。 |
-| 2 | 資料夾不存在、不是資料夾，或裡面沒有 PDF。 |
+| 2 | 資料夾不存在、不是資料夾，或裡面沒有支援的 PDF/圖片。 |
 
 處理中會顯示進度，例如：
 
@@ -136,8 +140,40 @@ C:\Scans\OCR輸出\
   <重新命名後的可搜尋 PDF>.pdf
 ```
 
+預設只掃描 `C:\Scans` 第一層的支援輸入：PDF 與 JPG/JPEG/PNG/TIF/TIFF 圖片。圖片會先
+透過 MuPDF 轉成 PDF，輸出一律是可搜尋的 `.pdf`；多頁 TIFF 會保留頁數。如果圖片沒有
+DPI 標記，MuPDF 會假設 96dpi。
+
+若要包含子資料夾，可以執行：
+
+```powershell
+pdf-ocrer "C:\Scans" --recursive
+```
+
+或在 `config.toml` 設定：
+
+```toml
+[input]
+recursive = true
+image_extensions = ["jpg", "jpeg", "png", "tif", "tiff"]  # 設為 [] 可只處理 PDF
+```
+
+啟用遞迴後，輸出會鏡像原本的子資料夾結構。例如
+`C:\Scans\2026\scan.pdf` 會輸出到 `C:\Scans\OCR輸出\2026\...`，CSV 的原檔名
+欄會記錄 `2026/scan.pdf`。任何名稱等於輸出資料夾名稱的資料夾，不論在第幾層，都會被略過。
+
 CSV 使用 `utf-8-sig` 編碼，Excel 開啟比較不會亂碼。每處理完一個檔案就會寫入一列，
 所以中途取消或當機時，已完成的紀錄仍會保留。
+
+增量處理預設開啟。pdf-ocrer 會在輸出資料夾保存 `.pdf_ocrer_manifest.json`，來源檔大小
+與修改時間符合先前成功輸出，或先前已判定為加密跳過時，重跑會顯示
+`已處理-跳過`，不會把該檔寫進新的 CSV。若整批都沒有新處理檔案，本次不會產生 CSV。
+要單次全部重做可用 `--force` 或 GUI 的 `全部重新處理`；要關閉增量可在設定檔加入：
+
+```toml
+[output]
+incremental = false
+```
 
 ## 自動命名
 
@@ -214,6 +250,21 @@ engine = "rapidocr"
 appearance = "system"  # 可用 "system"、"light"、"dark"
 ```
 
+增量處理可在設定檔中調整：
+
+```toml
+[output]
+incremental = true  # 預設 true；設 false 則每次都重新處理
+```
+
+子資料夾掃描可在設定檔中調整：
+
+```toml
+[input]
+recursive = true
+image_extensions = ["jpg", "jpeg", "png", "tif", "tiff"]  # 設為 [] 可只處理 PDF
+```
+
 ## 速度與模型
 
 AMD Ryzen 5 8600G CPU 上的 dense 2 頁診所文件實測：
@@ -264,7 +315,7 @@ rec_model_name = "PP-OCRv6_small_rec"
   可能不準。
 - 歪斜文字行仍可搜尋，但 v1 使用水平文字層，反白位置可能略有偏移。
 - 需要密碼的 PDF 會被略過，並記錄在 CSV。
-- 不會掃描子資料夾。
+- 沒有 DPI 標記的圖片會使用 MuPDF 的 96dpi 頁面尺寸假設。
 - `ocr.device` 設定欄位存在，但目前只宣稱 CPU 路徑已測試，不宣稱 GPU 支援。
 - PaddlePaddle 3.3.x 不能可靠使用 MKLDNN/oneDNN；要開啟 `ocr.enable_mkldnn` 前，
   請使用 `paddle-cpu` extra 釘住的 3.2.x。

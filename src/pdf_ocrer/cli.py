@@ -12,7 +12,7 @@ from pdf_ocrer.app_logging import setup_logging
 from pdf_ocrer.config import ConfigError, LlmConfig, LoggingConfig, OcrConfig, load_config
 from pdf_ocrer.llm_providers import LLMClient, create_client
 from pdf_ocrer.ocr_engine import OcrEngineProtocol, create_engine
-from pdf_ocrer.pipeline import BatchSummary, FileStatus, run_batch
+from pdf_ocrer.pipeline import BatchSummary, FileResult, FileStatus, run_batch
 
 DEFAULT_NAMING_PROMPT = """你是診所行政檔案命名助手。根據下方 OCR 文字，輸出一個檔名（不含副檔名）。
 格式：日期_文件類型_對象
@@ -67,6 +67,8 @@ def main(
             cfg = replace(cfg, ocr=replace(cfg.ocr, dpi=args.dpi))
         if args.engine is not None:
             cfg = replace(cfg, ocr=replace(cfg.ocr, engine=args.engine))
+        if args.recursive:
+            cfg = replace(cfg, input=replace(cfg.input, recursive=True))
 
         prompt_template = _load_prompt(Path(cfg.naming.prompt_file))
         log_cb = print
@@ -86,6 +88,7 @@ def main(
             prompt_template,
             progress_cb=_print_progress,
             log_cb=log_cb,
+            force=args.force,
         )
     except ConfigError as exc:
         setup_logging(LoggingConfig())
@@ -108,6 +111,8 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--no-llm", action="store_true")
     parser.add_argument("--dpi", type=int)
     parser.add_argument("--engine", choices=("paddle", "rapidocr"), default=None)
+    parser.add_argument("--recursive", action="store_true", help="遞迴掃描子資料夾")
+    parser.add_argument("--force", action="store_true", help="忽略增量記錄，全部重新處理")
     parser.add_argument("--version", action="store_true")
     return parser
 
@@ -136,8 +141,8 @@ def _print_summary(summary: BatchSummary) -> None:
         print(
             "\t".join(
                 [
-                    result.source.name,
-                    "" if result.output is None else result.output.name,
+                    result.rel or result.source.name,
+                    "" if result.output is None else _summary_output_name(result, summary.output_dir),
                     result.status.value,
                     str(result.total_pages),
                     str(result.ocr_pages),
@@ -146,4 +151,14 @@ def _print_summary(summary: BatchSummary) -> None:
                 ]
             )
         )
-    print(f"CSV: {summary.csv_path if summary.csv_path is not None else '無'}")
+    if summary.csv_path is not None:
+        print(f"CSV: {summary.csv_path}")
+
+
+def _summary_output_name(result: FileResult, output_dir: Path) -> str:
+    if result.output is None:
+        return ""
+    try:
+        return result.output.relative_to(output_dir).as_posix()
+    except ValueError:
+        return result.output.name

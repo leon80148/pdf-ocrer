@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pymupdf
+from PIL import Image
 
 GT_LINES: list[tuple[tuple[float, float], float, str]] = [
     ((72, 100), 20, "診斷證明書"),
@@ -54,6 +55,26 @@ def build_corrupt(path: Path) -> None:
     path.write_bytes(b"%PDF-1.4 not really a pdf")
 
 
+def build_image_png(path: Path) -> None:
+    _write_image_from_native_page(path, "png")
+
+
+def build_image_jpg(path: Path) -> None:
+    _write_image_from_native_page(path, "jpeg")
+
+
+def build_tiff_multipage(path: Path) -> None:
+    doc = _new_native_doc()
+    try:
+        pix = doc[0].get_pixmap(dpi=200)
+        image = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
+        second = image.copy()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        image.save(path, save_all=True, append_images=[second], dpi=(200, 200))
+    finally:
+        doc.close()
+
+
 def build_all(folder: Path) -> dict[str, Path]:
     folder.mkdir(parents=True, exist_ok=True)
     paths = {
@@ -103,10 +124,23 @@ def _append_native_page(doc: pymupdf.Document) -> None:
 
 def _append_scanned_page(doc: pymupdf.Document) -> None:
     native_doc = _new_native_doc()
-    native_page = native_doc[0]
-    pix = native_page.get_pixmap(dpi=200)
-    page = doc.new_page(width=native_page.rect.width, height=native_page.rect.height)
-    page.insert_image(page.rect, pixmap=pix)
+    try:
+        native_page = native_doc[0]
+        pix = native_page.get_pixmap(dpi=200)
+        page = doc.new_page(width=native_page.rect.width, height=native_page.rect.height)
+        page.insert_image(page.rect, pixmap=pix)
+    finally:
+        native_doc.close()
+
+
+def _write_image_from_native_page(path: Path, image_format: str) -> None:
+    doc = _new_native_doc()
+    try:
+        pix = doc[0].get_pixmap(dpi=200)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(pix.tobytes(image_format))
+    finally:
+        doc.close()
 
 
 def _save(doc: pymupdf.Document, path: Path, **kwargs: object) -> None:

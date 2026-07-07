@@ -35,6 +35,13 @@ class OutputConfig:
     subdir_name: str = "OCR輸出"
     csv_prefix: str = "對照表"
     export_txt: bool = False
+    incremental: bool = True
+
+
+@dataclass(frozen=True)
+class InputConfig:
+    recursive: bool = False
+    image_extensions: tuple[str, ...] = ("jpg", "jpeg", "png", "tif", "tiff")
 
 
 @dataclass(frozen=True)
@@ -83,6 +90,7 @@ class AppConfig:
     naming: NamingConfig
     llm: LlmConfig
     debug: DebugConfig
+    input: InputConfig = InputConfig()
     gui: GuiConfig = GuiConfig()
     logging: LoggingConfig = LoggingConfig()
 
@@ -121,6 +129,7 @@ def load_config(path: Path | None = None) -> AppConfig:
     sections: dict[str, type[object]] = {
         "ocr": OcrConfig,
         "output": OutputConfig,
+        "input": InputConfig,
         "naming": NamingConfig,
         "llm": LlmConfig,
         "debug": DebugConfig,
@@ -145,6 +154,7 @@ def load_config(path: Path | None = None) -> AppConfig:
             naming=_section(section_values, "naming", NamingConfig()),
             llm=_section(section_values, "llm", LlmConfig()),
             debug=_section(section_values, "debug", DebugConfig()),
+            input=_section(section_values, "input", InputConfig()),
             gui=_section(section_values, "gui", GuiConfig()),
             logging=_section(section_values, "logging", LoggingConfig()),
         )
@@ -297,6 +307,7 @@ def _validate(cfg: AppConfig) -> AppConfig:
         cfg,
         ocr=ocr,
         output=output,
+        input=_validate_input(cfg.input),
         gui=_validate_gui(cfg.gui),
         logging=_validate_logging(cfg.logging),
     )
@@ -337,7 +348,33 @@ def _validate_ocr(cfg: OcrConfig) -> OcrConfig:
 
 def _validate_output(cfg: OutputConfig) -> OutputConfig:
     _require_bool("export_txt", cfg.export_txt)
+    _require_bool("incremental", cfg.incremental)
     return cfg
+
+
+def _validate_input(cfg: InputConfig) -> InputConfig:
+    _require_bool("recursive", cfg.recursive)
+    image_extensions = _normalize_image_extensions(cfg.image_extensions)
+    if image_extensions == cfg.image_extensions:
+        return cfg
+    return replace(cfg, image_extensions=image_extensions)
+
+
+def _normalize_image_extensions(value: object) -> tuple[str, ...]:
+    if not isinstance(value, list | tuple):
+        raise ConfigError("設定欄位 image_extensions 必須是字串清單")
+
+    result: list[str] = []
+    seen: set[str] = set()
+    for item in value:
+        if not isinstance(item, str):
+            raise ConfigError("設定欄位 image_extensions 必須是字串清單")
+        extension = item.removeprefix(".").casefold()
+        if extension not in seen:
+            result.append(extension)
+            seen.add(extension)
+
+    return tuple(result)
 
 
 def _validate_naming(cfg: NamingConfig) -> None:

@@ -7,7 +7,7 @@ import numpy as np
 import pymupdf
 import pytest
 
-from fixtures_gen import GT_LINES
+from fixtures_gen import GT_LINES, build_image_png, build_tiff_multipage
 from pdf_ocrer.config import AppConfig, DebugConfig, LlmConfig, NamingConfig, OcrConfig, OutputConfig
 from pdf_ocrer.ocr_engine import OcrLine
 from pdf_ocrer.pdf_processor import (
@@ -199,6 +199,45 @@ def test_process_pdf_mixed_keeps_existing_text_page(fixtures_dir) -> None:
     assert "診斷證明書" in result.page_texts[0]
     assert "高雄市安家診所" in result.page_texts[1]
     assert "診斷證明書" in result.text
+
+
+def test_process_pdf_png_converts_to_searchable_a4_pdf(tmp_path) -> None:
+    src = tmp_path / "scan.png"
+    out = tmp_path / "scan_ocr.pdf"
+    build_image_png(src)
+    line = OcrLine("診斷證明書", px_poly_from_gt(GT_LINES[0]), 0.99)
+    engine = FakeEngine([line])
+
+    result = process_pdf(src, make_cfg(), engine)
+    try:
+        assert result.total_pages == 1
+        assert result.ocr_pages == 1
+        assert result.reports == [PageReport(page_index=0, action="ocr", line_count=1)]
+        assert len(engine.images) == 1
+        assert abs(result.doc[0].rect.width - 595) < 2
+        assert abs(result.doc[0].rect.height - 842) < 2
+        assert "診斷證明書" in result.page_texts[0]
+        result.doc.save(out)
+    finally:
+        result.doc.close()
+
+    reopened = pymupdf.open(out)
+    assert "診斷證明書" in reopened[0].get_text()
+    assert reopened[0].search_for("診斷證明書")
+
+
+def test_process_pdf_tiff_preserves_multiple_pages(tmp_path) -> None:
+    src = tmp_path / "scan.tiff"
+    build_tiff_multipage(src)
+    engine = FakeEngine([])
+
+    result = process_pdf(src, make_cfg(), engine)
+    try:
+        assert result.total_pages == 2
+        assert result.ocr_pages == 0
+        assert len(engine.images) == 2
+    finally:
+        result.doc.close()
 
 
 def test_process_pdf_encrypted_raises(fixtures_dir) -> None:

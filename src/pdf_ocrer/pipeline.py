@@ -8,13 +8,15 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from pdf_ocrer.config import AppConfig
 from pdf_ocrer.llm_namer import resolve_collision, suggest_filename
 from pdf_ocrer.llm_providers import LLMClient
+from pdf_ocrer.manifest import MANIFEST_NAME, FileIdentity, Manifest, ManifestEntry
 from pdf_ocrer.ocr_engine import OcrEngineProtocol
 from pdf_ocrer.pdf_processor import BatchCancelled, EncryptedPdfError, PdfResult, process_pdf
+from pdf_ocrer.scanning import scan_inputs
 
 
 class FileStatus(str, Enum):
@@ -22,6 +24,7 @@ class FileStatus(str, Enum):
     SUCCESS_EXISTING_TEXT = "已有文字層-僅命名"
     NO_TEXT_FOUND = "無文字-原樣輸出"
     SKIPPED_ENCRYPTED = "加密-跳過"
+    SKIPPED_DONE = "已處理-跳過"
     FAILED = "失敗"
 
 
@@ -34,6 +37,7 @@ class FileResult:
     ocr_pages: int
     naming_source: str
     note: str
+    rel: str = ""
 
 
 @dataclass
@@ -60,45 +64,63 @@ def run_batch(
     log_cb: Callable[[str], None] | None = None,
     cancel_event: threading.Event | None = None,
     file_cb: Callable[[FileResult], None] | None = None,
+    force: bool = False,
 ) -> BatchSummary:
     folder = Path(folder)
     output_dir = folder / cfg.output.subdir_name
     output_dir.mkdir(exist_ok=True)
+    manifest_path = output_dir / MANIFEST_NAME
+    manifest = Manifest.load(manifest_path)
+    incremental = cfg.output.incremental and not force
 
-    files = _scan_pdfs(folder, output_dir)
-    _logger.info("batch start folder=%s files=%d", folder, len(files))
-    if not files:
+    items = scan_inputs(folder, cfg.output.subdir_name, cfg.input)
+    _logger.info("batch start folder=%s files=%d", folder, len(items))
+    if not items:
         if log_cb is not None:
             log_cb("找不到 PDF 檔案。")
         summary = BatchSummary(results=[], csv_path=None, output_dir=output_dir, cancelled=False)
         _log_batch_end(summary)
         return summary
 
-    csv_path = output_dir / f"{cfg.output.csv_prefix}_{datetime.now():%Y%m%d_%H%M%S}.csv"
+    csv_path: Path | None = None
+    csv_file = None
+    writer: csv.writer | None = None
     results: list[FileResult] = []
-    used_stems: set[str] = set()
+    used_stems: dict[str, set[str]] = {}
     cancelled = False
 
-    with csv_path.open("w", encoding="utf-8-sig", newline="") as csv_file:
-        writer = csv.writer(csv_file)
-        writer.writerow(_CSV_HEADER)
-        csv_file.flush()
-
-        for file_i, src in enumerate(files, start=1):
+    try:
+        for file_i, item in enumerate(items, start=1):
             if cancel_event is not None and cancel_event.is_set():
                 cancelled = True
                 break
+
+            src = item.src
+            identity = FileIdentity.from_stat(src)
+            previous_entry = manifest.get(item.rel) if cfg.output.incremental else None
+            if incremental:
+                entry = manifest.should_skip(item.rel, identity, output_dir)
+                if entry is not None:
+                    result = _skipped_done_result(src, item.rel, entry, output_dir)
+                    results.append(result)
+                    _log_incremental_skip(item.rel, log_cb)
+                    _log_file_result(result, output_dir)
+                    if file_cb is not None:
+                        file_cb(result)
+                    continue
 
             try:
                 processed = process_pdf(
                     src,
                     cfg,
                     engine,
-                    page_cb=_page_progress(progress_cb, file_i, len(files), src.name),
+                    page_cb=_page_progress(progress_cb, file_i, len(items), item.rel),
                     cancel=cancel_event,
                 )
+                _remove_previous_output(output_dir, previous_entry, log_cb)
                 result = _finalize_processed_file(
                     src,
+                    item.rel,
                     processed,
                     cfg,
                     client,
@@ -116,6 +138,7 @@ def run_batch(
                     ocr_pages=0,
                     naming_source="none",
                     note=str(exc),
+                    rel=item.rel,
                 )
             except BatchCancelled:
                 cancelled = True
@@ -129,33 +152,36 @@ def run_batch(
                     ocr_pages=0,
                     naming_source="none",
                     note=f"{type(exc).__name__}: {exc}",
+                    rel=item.rel,
                 )
 
-            _write_csv_row(writer, result)
+            if writer is None:
+                csv_path = output_dir / f"{cfg.output.csv_prefix}_{datetime.now():%Y%m%d_%H%M%S}.csv"
+                csv_file = csv_path.open("w", encoding="utf-8-sig", newline="")
+                writer = csv.writer(csv_file)
+                writer.writerow(_CSV_HEADER)
+                csv_file.flush()
+            _write_csv_row(writer, result, output_dir)
             csv_file.flush()
             results.append(result)
-            _log_file_result(result)
+            _log_file_result(result, output_dir)
             if file_cb is not None:
                 file_cb(result)
+            if result.status is not FileStatus.FAILED:
+                manifest.record(
+                    item.rel,
+                    identity,
+                    result.status.value,
+                    None if result.output is None else _relative_output_name(result.output, output_dir),
+                )
+                manifest.save(manifest_path)
+    finally:
+        if csv_file is not None:
+            csv_file.close()
 
     summary = BatchSummary(results=results, csv_path=csv_path, output_dir=output_dir, cancelled=cancelled)
     _log_batch_end(summary)
     return summary
-
-
-def _scan_pdfs(folder: Path, output_dir: Path) -> list[Path]:
-    output_root = output_dir.resolve()
-    files = []
-    for path in folder.iterdir():
-        if not path.is_file() or path.suffix.casefold() != ".pdf":
-            continue
-        try:
-            if path.resolve().is_relative_to(output_root):
-                continue
-        except OSError:
-            pass
-        files.append(path)
-    return sorted(files, key=lambda item: item.name.casefold())
 
 
 def _page_progress(
@@ -173,31 +199,95 @@ def _page_progress(
     return callback
 
 
+def _skipped_done_result(
+    src: Path,
+    rel: str,
+    entry: ManifestEntry,
+    output_dir: Path,
+) -> FileResult:
+    return FileResult(
+        source=src,
+        output=None if entry.output is None else output_dir / entry.output,
+        status=FileStatus.SKIPPED_DONE,
+        total_pages=0,
+        ocr_pages=0,
+        naming_source="manifest",
+        note="",
+        rel=rel,
+    )
+
+
+def _log_incremental_skip(rel: str, log_cb: Callable[[str], None] | None) -> None:
+    message = f"已處理-跳過（先前已完成）: {rel}"
+    if log_cb is not None:
+        log_cb(message)
+    _logger.info("%s", message)
+
+
+def _remove_previous_output(
+    output_dir: Path,
+    entry: ManifestEntry | None,
+    log_cb: Callable[[str], None] | None,
+) -> None:
+    if entry is None or entry.output is None:
+        return
+
+    output = output_dir / entry.output
+    output_was_present = output.exists()
+    output_removed = False
+    txt_removed = False
+    for stale_path in (output, output.with_suffix(".txt")):
+        try:
+            if stale_path.exists():
+                stale_path.unlink(missing_ok=True)
+                if stale_path == output:
+                    output_removed = True
+                else:
+                    txt_removed = True
+        except OSError as exc:
+            _logger.warning("replace old output cleanup failed path=%s error=%s", stale_path, exc)
+
+    if output_was_present and not output_removed:
+        return
+    if not output_removed and not txt_removed:
+        return
+
+    message = f"取代舊輸出: {entry.output}"
+    if log_cb is not None:
+        log_cb(message)
+    _logger.info("%s", message)
+
+
 def _finalize_processed_file(
     src: Path,
+    rel: str,
     processed: PdfResult,
     cfg: AppConfig,
     client: LLMClient | None,
     prompt_template: str,
     output_dir: Path,
-    used_stems: set[str],
+    used_stems: dict[str, set[str]],
     log_cb: Callable[[str], None] | None,
 ) -> FileResult:
     doc_closed = False
     try:
         all_existing_text = all(report.action == "kept_existing" for report in processed.reports)
+        output_parent = output_dir / PurePosixPath(rel).parent
+        output_parent.mkdir(parents=True, exist_ok=True)
+        parent_key = PurePosixPath(rel).parent.as_posix()
+        parent_used_stems = used_stems.setdefault(parent_key, set())
         stem, naming_source = _choose_stem(
             src,
             processed.page_texts,
             cfg,
             client,
             prompt_template,
-            output_dir,
-            used_stems,
+            output_parent,
+            parent_used_stems,
             log_cb,
             keep_original=all_existing_text and not cfg.naming.rename_files_with_text,
         )
-        output = output_dir / f"{stem}.pdf"
+        output = output_parent / f"{stem}.pdf"
 
         if all_existing_text:
             processed.doc.close()
@@ -225,6 +315,7 @@ def _finalize_processed_file(
             ocr_pages=processed.ocr_pages,
             naming_source=naming_source,
             note="",
+            rel=rel,
         )
     finally:
         if not doc_closed:
@@ -290,11 +381,11 @@ def _write_txt_export(output: Path, page_texts: list[str], cfg: AppConfig) -> No
         _logger.warning("txt export failed output=%s error=%s", output, exc)
 
 
-def _write_csv_row(writer: csv.writer, result: FileResult) -> None:
+def _write_csv_row(writer: csv.writer, result: FileResult, output_dir: Path) -> None:
     writer.writerow(
         [
-            result.source.name,
-            "" if result.output is None else result.output.name,
+            result.rel or result.source.name,
+            "" if result.output is None else _relative_output_name(result.output, output_dir),
             result.status.value,
             result.total_pages,
             result.ocr_pages,
@@ -304,25 +395,35 @@ def _write_csv_row(writer: csv.writer, result: FileResult) -> None:
     )
 
 
-def _log_file_result(result: FileResult) -> None:
-    output_name = "" if result.output is None else result.output.name
+def _log_file_result(result: FileResult, output_dir: Path) -> None:
+    source_name = result.rel or result.source.name
+    output_name = "" if result.output is None else _relative_output_name(result.output, output_dir)
     _logger.info(
         "file result source=%s status=%s output=%s note=%s",
-        result.source.name,
+        source_name,
         result.status.value,
         output_name,
         result.note,
     )
 
 
+def _relative_output_name(output: Path, output_dir: Path) -> str:
+    try:
+        return output.relative_to(output_dir).as_posix()
+    except ValueError:
+        return output.name
+
+
 def _log_batch_end(summary: BatchSummary) -> None:
     failed = sum(result.status is FileStatus.FAILED for result in summary.results)
     skipped = sum(result.status is FileStatus.SKIPPED_ENCRYPTED for result in summary.results)
+    skipped_done = sum(result.status is FileStatus.SKIPPED_DONE for result in summary.results)
     _logger.info(
-        "batch end results=%d failed=%d skipped=%d cancelled=%s csv=%s",
+        "batch end results=%d failed=%d skipped=%d skipped_done=%d cancelled=%s csv=%s",
         len(summary.results),
         failed,
         skipped,
+        skipped_done,
         summary.cancelled,
         summary.csv_path,
     )

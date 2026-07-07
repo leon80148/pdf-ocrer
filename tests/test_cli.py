@@ -13,6 +13,7 @@ from pdf_ocrer import __version__
 from pdf_ocrer.cli import main
 from pdf_ocrer.config import ConfigError
 from pdf_ocrer.ocr_engine import OcrLine
+from pdf_ocrer.pipeline import BatchSummary, FileResult, FileStatus
 
 _DPI = 200
 _FONT = pymupdf.Font("cjk")
@@ -118,6 +119,133 @@ def test_main_engine_override_passes_to_engine_factory(work_folder, tmp_path) ->
 
     assert exit_code == 0
     assert captured == {"engine": "rapidocr"}
+
+
+def test_main_recursive_flag_overrides_input_config(tmp_path, monkeypatch) -> None:
+    folder = tmp_path / "input"
+    folder.mkdir()
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        "[input]\n"
+        "recursive = false\n"
+        "[naming]\n"
+        "enabled = false\n",
+        encoding="utf-8",
+    )
+    captured: dict[str, object] = {}
+
+    def fake_run_batch(folder_arg, cfg, engine, client, prompt_template, **kwargs):  # noqa: ANN001, ANN003
+        captured["folder"] = folder_arg
+        captured["recursive"] = cfg.input.recursive
+        output_dir = folder_arg / cfg.output.subdir_name
+        return BatchSummary(
+            results=[
+                FileResult(
+                    source=folder_arg / "sub" / "a.pdf",
+                    output=output_dir / "sub" / "a_OCR.pdf",
+                    status=FileStatus.SUCCESS_OCR,
+                    total_pages=1,
+                    ocr_pages=1,
+                    naming_source="none",
+                    note="",
+                    rel="sub/a.pdf",
+                )
+            ],
+            csv_path=None,
+            output_dir=output_dir,
+            cancelled=False,
+        )
+
+    monkeypatch.setattr("pdf_ocrer.cli.run_batch", fake_run_batch)
+
+    exit_code = main(
+        [str(folder), "--config", str(config_path), "--recursive"],
+        engine_factory=lambda ocr_cfg: FakeEngine(),
+        client_factory=lambda llm_cfg: None,
+    )
+
+    assert exit_code == 0
+    assert captured == {"folder": folder, "recursive": True}
+
+
+def test_main_force_flag_passes_to_run_batch(tmp_path, monkeypatch) -> None:
+    folder = tmp_path / "input"
+    folder.mkdir()
+    captured: dict[str, object] = {}
+
+    def fake_run_batch(folder_arg, cfg, engine, client, prompt_template, **kwargs):  # noqa: ANN001, ANN003
+        captured["force"] = kwargs.get("force")
+        output_dir = folder_arg / cfg.output.subdir_name
+        return BatchSummary(
+            results=[
+                FileResult(
+                    source=folder_arg / "a.pdf",
+                    output=output_dir / "a_OCR.pdf",
+                    status=FileStatus.SUCCESS_OCR,
+                    total_pages=1,
+                    ocr_pages=1,
+                    naming_source="none",
+                    note="",
+                    rel="a.pdf",
+                )
+            ],
+            csv_path=output_dir / "對照表.csv",
+            output_dir=output_dir,
+            cancelled=False,
+        )
+
+    monkeypatch.setattr("pdf_ocrer.cli.run_batch", fake_run_batch)
+
+    exit_code = main(
+        [str(folder), "--force"],
+        engine_factory=lambda ocr_cfg: FakeEngine(),
+        client_factory=lambda llm_cfg: None,
+    )
+
+    assert exit_code == 0
+    assert captured == {"force": True}
+
+
+def test_main_all_incremental_skipped_returns_zero_and_omits_csv_line(
+    tmp_path,
+    monkeypatch,
+    capsys,
+) -> None:
+    folder = tmp_path / "input"
+    folder.mkdir()
+
+    def fake_run_batch(folder_arg, cfg, engine, client, prompt_template, **kwargs):  # noqa: ANN001, ANN003
+        output_dir = folder_arg / cfg.output.subdir_name
+        return BatchSummary(
+            results=[
+                FileResult(
+                    source=folder_arg / "a.pdf",
+                    output=output_dir / "a_OCR.pdf",
+                    status=FileStatus.SKIPPED_DONE,
+                    total_pages=0,
+                    ocr_pages=0,
+                    naming_source="manifest",
+                    note="",
+                    rel="a.pdf",
+                )
+            ],
+            csv_path=None,
+            output_dir=output_dir,
+            cancelled=False,
+        )
+
+    monkeypatch.setattr("pdf_ocrer.cli.run_batch", fake_run_batch)
+
+    exit_code = main(
+        [str(folder), "--no-llm"],
+        engine_factory=lambda ocr_cfg: FakeEngine(),
+        client_factory=lambda llm_cfg: None,
+    )
+
+    stdout = capsys.readouterr().out
+    assert exit_code == 0
+    assert FileStatus.SKIPPED_DONE.value in stdout
+    assert "CSV:" not in stdout
 
 
 def test_main_create_engine_config_error_reports_install_hint(

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import hashlib
+import json
 import logging
 import os
 import shutil
@@ -10,11 +11,12 @@ from pathlib import Path
 
 import pymupdf
 
-from fixtures_gen import GT_LINES
+from fixtures_gen import GT_LINES, build_image_png
 from pdf_ocrer.app_logging import setup_logging
 from pdf_ocrer.config import (
     AppConfig,
     DebugConfig,
+    InputConfig,
     LlmConfig,
     LoggingConfig,
     NamingConfig,
@@ -22,6 +24,7 @@ from pdf_ocrer.config import (
     OutputConfig,
 )
 from pdf_ocrer.llm_providers import LLMError
+from pdf_ocrer.manifest import MANIFEST_NAME
 from pdf_ocrer.ocr_engine import OcrLine
 from pdf_ocrer.pdf_processor import PageReport, PdfResult
 from pdf_ocrer.pipeline import FileResult, FileStatus, _text_for_naming, run_batch
@@ -199,6 +202,13 @@ def test_run_batch_writes_batch_and_file_status_lines_to_log(work_folder, tmp_pa
         StaticClient("20260615_診斷證明書"),
         _PROMPT,
     )
+    second = run_batch(
+        work_folder,
+        cfg,
+        FakeEngine(),
+        StaticClient("20260615_診斷證明書"),
+        _PROMPT,
+    )
     _flush_pdf_ocrer_file_handlers()
 
     text = (log_dir / "pdf_ocrer.log").read_text(encoding="utf-8")
@@ -211,6 +221,11 @@ def test_run_batch_writes_batch_and_file_status_lines_to_log(work_folder, tmp_pa
         assert f"output={output_name}" in text
     assert "batch end" in text
     assert "results=2" in text
+    assert "skipped_done=2" in text
+    assert [result.status for result in second.results] == [
+        FileStatus.SKIPPED_DONE,
+        FileStatus.SKIPPED_DONE,
+    ]
 
 
 def test_run_batch_default_logging_uses_isolated_localappdata(work_folder) -> None:
@@ -308,6 +323,277 @@ def test_run_batch_export_txt_replaces_unencodable_surrogates(work_folder, monke
     assert "bad?x" in text
 
 
+def test_run_batch_recursive_mirrors_outputs_csv_rel_and_per_dir_collision(
+    work_folder: Path,
+    fixtures_dir: Path,
+) -> None:
+    _keep_only(work_folder, set())
+    (work_folder / "alpha").mkdir()
+    (work_folder / "beta").mkdir()
+    (work_folder / OutputConfig().subdir_name).mkdir()
+    (work_folder / "alpha" / OutputConfig().subdir_name).mkdir()
+    shutil.copy2(fixtures_dir / "native.pdf", work_folder / "alpha" / "a.pdf")
+    shutil.copy2(fixtures_dir / "native.pdf", work_folder / "beta" / "a.pdf")
+    shutil.copy2(
+        fixtures_dir / "native.pdf",
+        work_folder / OutputConfig().subdir_name / "top-decoy.pdf",
+    )
+    shutil.copy2(
+        fixtures_dir / "native.pdf",
+        work_folder / "alpha" / OutputConfig().subdir_name / "nested-decoy.pdf",
+    )
+    progress_names: list[str] = []
+    cfg = make_cfg(
+        input=InputConfig(recursive=True),
+        naming=NamingConfig(enabled=False),
+    )
+
+    summary = run_batch(
+        work_folder,
+        cfg,
+        FakeEngine(),
+        None,
+        _PROMPT,
+        progress_cb=lambda file_i, file_n, page_i, page_n, name: progress_names.append(name),
+    )
+
+    assert summary.cancelled is False
+    assert [result.rel for result in summary.results] == ["alpha/a.pdf", "beta/a.pdf"]
+    assert all(result.status is FileStatus.SUCCESS_EXISTING_TEXT for result in summary.results)
+    assert (summary.output_dir / "alpha" / "a_OCR.pdf").exists()
+    assert (summary.output_dir / "beta" / "a_OCR.pdf").exists()
+    assert not (summary.output_dir / "beta" / "a_OCR_2.pdf").exists()
+    assert progress_names == ["alpha/a.pdf", "beta/a.pdf"]
+
+    assert summary.csv_path is not None
+    rows = _read_csv(summary.csv_path)
+    assert [row[0] for row in rows[1:]] == ["alpha/a.pdf", "beta/a.pdf"]
+    assert [row[1] for row in rows[1:]] == ["alpha/a_OCR.pdf", "beta/a_OCR.pdf"]
+
+
+def test_run_batch_recursive_incremental_second_run_skips_nested_outputs(
+    work_folder: Path,
+    fixtures_dir: Path,
+) -> None:
+    _keep_only(work_folder, set())
+    (work_folder / "alpha").mkdir()
+    (work_folder / "beta" / "deep").mkdir(parents=True)
+    shutil.copy2(fixtures_dir / "native.pdf", work_folder / "alpha" / "a.pdf")
+    shutil.copy2(fixtures_dir / "native.pdf", work_folder / "beta" / "deep" / "b.pdf")
+    cfg = make_cfg(input=InputConfig(recursive=True), naming=NamingConfig(enabled=False))
+
+    first = run_batch(work_folder, cfg, FakeEngine(), None, _PROMPT)
+    second = run_batch(work_folder, cfg, FakeEngine(), None, _PROMPT)
+
+    assert first.csv_path is not None
+    assert second.csv_path is None
+    assert [result.rel for result in second.results] == ["alpha/a.pdf", "beta/deep/b.pdf"]
+    assert [result.status for result in second.results] == [
+        FileStatus.SKIPPED_DONE,
+        FileStatus.SKIPPED_DONE,
+    ]
+    assert [result.output for result in second.results] == [
+        first.output_dir / "alpha" / "a_OCR.pdf",
+        first.output_dir / "beta" / "deep" / "b_OCR.pdf",
+    ]
+
+
+def test_run_batch_image_input_writes_searchable_pdf_and_csv(work_folder: Path) -> None:
+    _keep_only(work_folder, set())
+    build_image_png(work_folder / "scan.png")
+    cfg = make_cfg(naming=NamingConfig(enabled=False))
+
+    summary = run_batch(work_folder, cfg, FakeEngine(), None, _PROMPT)
+
+    assert summary.cancelled is False
+    assert len(summary.results) == 1
+    result = summary.results[0]
+    assert result.rel == "scan.png"
+    assert result.status is FileStatus.SUCCESS_OCR
+    assert result.output == summary.output_dir / "scan_OCR.pdf"
+    assert result.output.exists()
+    doc = pymupdf.open(result.output)
+    assert "診斷證明書" in doc[0].get_text()
+
+    assert summary.csv_path is not None
+    rows = _read_csv(summary.csv_path)
+    assert rows[1][0] == "scan.png"
+    assert rows[1][1] == "scan_OCR.pdf"
+    assert rows[1][2] == FileStatus.SUCCESS_OCR.value
+
+
+def test_run_batch_incremental_second_run_skips_done_and_writes_no_csv(
+    work_folder: Path,
+) -> None:
+    _keep_only(work_folder, {"native.pdf"})
+    cfg = make_cfg(naming=NamingConfig(enabled=False))
+    logs: list[str] = []
+
+    first = run_batch(work_folder, cfg, FakeEngine(), None, _PROMPT)
+    second = run_batch(work_folder, cfg, FakeEngine(), None, _PROMPT, log_cb=logs.append)
+
+    assert first.csv_path is not None
+    assert second.csv_path is None
+    assert len(list(first.output_dir.glob("對照表_*.csv"))) == 1
+    assert [result.status for result in second.results] == [FileStatus.SKIPPED_DONE]
+    assert second.results[0].output == first.results[0].output
+    assert second.results[0].rel == "native.pdf"
+    assert second.results[0].note == ""
+    assert logs == ["已處理-跳過（先前已完成）: native.pdf"]
+
+
+def test_run_batch_incremental_resumes_after_cancel_from_unfinished_files(
+    work_folder: Path,
+) -> None:
+    _keep_only(work_folder, {"native.pdf", "scanned.pdf"})
+    cfg = make_cfg(naming=NamingConfig(enabled=False))
+    cancel = threading.Event()
+
+    def cancel_after_first(file_i: int, file_n: int, page_i: int, page_n: int, filename: str) -> None:
+        if file_i == 1 and page_i == page_n:
+            cancel.set()
+
+    first = run_batch(
+        work_folder,
+        cfg,
+        FakeEngine(),
+        None,
+        _PROMPT,
+        progress_cb=cancel_after_first,
+        cancel_event=cancel,
+    )
+    second = run_batch(work_folder, cfg, FakeEngine(), None, _PROMPT)
+
+    assert first.cancelled is True
+    assert [result.source.name for result in first.results] == ["native.pdf"]
+    assert [result.status for result in second.results] == [
+        FileStatus.SKIPPED_DONE,
+        FileStatus.SUCCESS_OCR,
+    ]
+    assert second.csv_path is not None
+    rows = _read_csv(second.csv_path)
+    assert len(rows) == 2
+    assert rows[1][0] == "scanned.pdf"
+
+
+def test_run_batch_incremental_source_mtime_change_reprocesses(work_folder: Path) -> None:
+    _keep_only(work_folder, {"native.pdf"})
+    cfg = make_cfg(naming=NamingConfig(enabled=False))
+    source = work_folder / "native.pdf"
+
+    run_batch(work_folder, cfg, FakeEngine(), None, _PROMPT)
+    _touch_mtime(source)
+    second = run_batch(work_folder, cfg, FakeEngine(), None, _PROMPT)
+
+    assert [result.status for result in second.results] == [FileStatus.SUCCESS_EXISTING_TEXT]
+    assert second.csv_path is not None
+
+
+def test_run_batch_incremental_source_change_replaces_previous_output_and_txt(
+    work_folder: Path,
+    fixtures_dir: Path,
+) -> None:
+    _keep_only(work_folder, {"native.pdf"})
+    first_cfg = make_cfg(output=OutputConfig(export_txt=True), naming=NamingConfig(enabled=False))
+
+    first = run_batch(work_folder, first_cfg, FakeEngine(), None, _PROMPT)
+    output_dir = first.output_dir
+    old_output = output_dir / "native_OCR.pdf"
+    old_txt = old_output.with_suffix(".txt")
+    assert first.results[0].output == old_output
+    assert old_txt.exists()
+
+    shutil.copy2(fixtures_dir / "scanned.pdf", work_folder / "native.pdf")
+    _touch_mtime(work_folder / "native.pdf")
+    logs: list[str] = []
+    second_cfg = make_cfg(output=OutputConfig(export_txt=False), naming=NamingConfig(enabled=False))
+
+    second = run_batch(
+        work_folder,
+        second_cfg,
+        FakeEngine([OcrLine("新版內容", _px_poly((72, 72), 12, "新版內容"), 0.99)]),
+        None,
+        _PROMPT,
+        log_cb=logs.append,
+    )
+
+    assert [result.status for result in second.results] == [FileStatus.SUCCESS_OCR]
+    assert second.results[0].output == old_output
+    assert sorted(path.name for path in output_dir.glob("*.pdf")) == ["native_OCR.pdf"]
+    assert not (output_dir / "native_OCR_2.pdf").exists()
+    assert not old_txt.exists()
+    assert logs == ["取代舊輸出: native_OCR.pdf"]
+    doc = pymupdf.open(old_output)
+    try:
+        assert "新版內容" in doc[0].get_text()
+    finally:
+        doc.close()
+
+
+def test_run_batch_incremental_missing_output_reprocesses(work_folder: Path) -> None:
+    _keep_only(work_folder, {"native.pdf"})
+    cfg = make_cfg(naming=NamingConfig(enabled=False))
+
+    first = run_batch(work_folder, cfg, FakeEngine(), None, _PROMPT)
+    assert first.results[0].output is not None
+    first.results[0].output.unlink()
+    second = run_batch(work_folder, cfg, FakeEngine(), None, _PROMPT)
+
+    assert [result.status for result in second.results] == [FileStatus.SUCCESS_EXISTING_TEXT]
+    assert second.csv_path is not None
+    assert sorted(path.name for path in second.output_dir.glob("*.pdf")) == ["native_OCR.pdf"]
+
+
+def test_run_batch_force_ignores_manifest_and_updates_manifest(work_folder: Path) -> None:
+    _keep_only(work_folder, {"native.pdf"})
+    cfg = make_cfg()
+
+    run_batch(work_folder, cfg, FakeEngine(), StaticClient("first"), _PROMPT)
+    second = run_batch(
+        work_folder,
+        cfg,
+        FakeEngine(),
+        StaticClient("second"),
+        _PROMPT,
+        force=True,
+    )
+
+    assert [result.status for result in second.results] == [FileStatus.SUCCESS_EXISTING_TEXT]
+    assert second.results[0].output is not None
+    assert second.results[0].output.name == "second.pdf"
+    assert second.csv_path is not None
+    assert _read_manifest_output(second.output_dir, "native.pdf") == "second.pdf"
+
+
+def test_run_batch_incremental_encrypted_skips_from_manifest_without_output(
+    work_folder: Path,
+) -> None:
+    _keep_only(work_folder, {"encrypted.pdf"})
+    cfg = make_cfg()
+
+    first = run_batch(work_folder, cfg, FakeEngine(), StaticClient("ignored"), _PROMPT)
+    second = run_batch(work_folder, cfg, FakeEngine(), StaticClient("ignored"), _PROMPT)
+
+    assert [result.status for result in first.results] == [FileStatus.SKIPPED_ENCRYPTED]
+    assert first.csv_path is not None
+    assert [result.status for result in second.results] == [FileStatus.SKIPPED_DONE]
+    assert second.results[0].output is None
+    assert second.csv_path is None
+
+
+def test_run_batch_incremental_failed_files_retry_and_write_csv(work_folder: Path) -> None:
+    _keep_only(work_folder, {"corrupt.pdf"})
+    cfg = make_cfg()
+
+    first = run_batch(work_folder, cfg, FakeEngine(), StaticClient("ignored"), _PROMPT)
+    second = run_batch(work_folder, cfg, FakeEngine(), StaticClient("ignored"), _PROMPT)
+
+    assert [result.status for result in first.results] == [FileStatus.FAILED]
+    assert [result.status for result in second.results] == [FileStatus.FAILED]
+    assert first.csv_path is not None
+    assert second.csv_path is not None
+
+
 def test_text_for_naming_uses_page_texts_before_joining_page_breaks() -> None:
     cfg = make_cfg(naming=NamingConfig(max_pages_to_llm=2, max_chars_to_llm=1000))
 
@@ -362,6 +648,16 @@ def _source_hashes(folder: Path) -> dict[str, str]:
 def _read_csv(path: Path) -> list[list[str]]:
     with path.open("r", encoding="utf-8-sig", newline="") as file:
         return list(csv.reader(file))
+
+
+def _touch_mtime(path: Path) -> None:
+    next_ns = path.stat().st_mtime_ns + 5_000_000_000
+    os.utime(path, ns=(next_ns, next_ns))
+
+
+def _read_manifest_output(output_dir: Path, rel: str) -> str | None:
+    payload = json.loads((output_dir / MANIFEST_NAME).read_text(encoding="utf-8"))
+    return payload["entries"][rel]["output"]
 
 
 def _remove_pdf_ocrer_file_handlers() -> None:

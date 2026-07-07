@@ -6,7 +6,7 @@ import queue
 import threading
 import tkinter as tk
 from collections.abc import Callable
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from tkinter import filedialog, messagebox, ttk
 
 import customtkinter as ctk
@@ -182,6 +182,7 @@ class App(_AppBase):
         self.folder_var = tk.StringVar()
         self.status_var = tk.StringVar(value="選擇資料夾後開始")
         self.auto_csv_var = tk.BooleanVar(value=True)
+        self.force_var = tk.BooleanVar(value=False)
 
         self.title(f"pdf-ocrer {__version__}")
         self.minsize(860, 600)
@@ -235,41 +236,48 @@ class App(_AppBase):
 
         action_frame = ctk.CTkFrame(self, fg_color="transparent")
         action_frame.grid(row=1, column=0, sticky="ew", padx=12, pady=(0, 6))
-        action_frame.columnconfigure(4, weight=1)
+        action_frame.columnconfigure(5, weight=1)
 
         self.start_button = ctk.CTkButton(action_frame, text="開始", command=self._start)
         self.start_button.grid(row=0, column=0, padx=(0, 8))
 
+        self.force_checkbox = ctk.CTkCheckBox(
+            action_frame,
+            text="全部重新處理",
+            variable=self.force_var,
+        )
+        self.force_checkbox.grid(row=0, column=1, padx=(0, 8))
+
         self.cancel_button = ctk.CTkButton(action_frame, text="取消", command=self._cancel)
-        self.cancel_button.grid(row=0, column=1, padx=(0, 8))
+        self.cancel_button.grid(row=0, column=2, padx=(0, 8))
 
         self.edit_prompt_button = ctk.CTkButton(
             action_frame,
             text="編輯命名規則",
             command=self._edit_prompt,
         )
-        self.edit_prompt_button.grid(row=0, column=2, padx=(16, 8))
+        self.edit_prompt_button.grid(row=0, column=3, padx=(16, 8))
 
         self.edit_config_button = ctk.CTkButton(
             action_frame,
             text="編輯設定",
             command=self._open_settings_dialog,
         )
-        self.edit_config_button.grid(row=0, column=3)
+        self.edit_config_button.grid(row=0, column=4)
 
         self.auto_csv_checkbox = ctk.CTkCheckBox(
             action_frame,
             text="完成後開啟對照表",
             variable=self.auto_csv_var,
         )
-        self.auto_csv_checkbox.grid(row=0, column=5, sticky="e", padx=(8, 16))
+        self.auto_csv_checkbox.grid(row=0, column=6, sticky="e", padx=(8, 16))
 
         self.theme_segmented = ctk.CTkSegmentedButton(
             action_frame,
             values=["淺色", "深色", "系統"],
             command=self._change_appearance,
         )
-        self.theme_segmented.grid(row=0, column=6, sticky="e")
+        self.theme_segmented.grid(row=0, column=7, sticky="e")
         self.theme_segmented.set(_APPEARANCE_TO_SEGMENT.get(initial_appearance, "系統"))
 
         progress_frame = ctk.CTkFrame(self, fg_color="transparent")
@@ -358,7 +366,7 @@ class App(_AppBase):
 
         self._worker = threading.Thread(
             target=self._run_worker,
-            args=(folder, self._cancel_event),
+            args=(folder, self._cancel_event, bool(self.force_var.get())),
             daemon=False,
         )
         self._worker.start()
@@ -369,11 +377,17 @@ class App(_AppBase):
         self.cancel_button.configure(state="disabled")
         self._append_log("正在取消處理...")
 
-    def _run_worker(self, folder: Path, cancel_event: threading.Event) -> None:
+    def _run_worker(
+        self,
+        folder: Path,
+        cancel_event: threading.Event,
+        force: bool | None = None,
+    ) -> None:
         try:
             cfg = load_config(self._config_path)
             setup_logging(cfg.logging)
             log_cb = self._queue_log
+            force = bool(self.force_var.get()) if force is None else force
             prompt_template = _load_prompt(Path(cfg.naming.prompt_file))
             engine = self._create_engine(cfg.ocr, log_cb)
             client = None
@@ -393,6 +407,7 @@ class App(_AppBase):
                 log_cb=log_cb,
                 cancel_event=cancel_event,
                 file_cb=self._queue_file_done,
+                force=force,
             )
         except Exception as exc:
             _logger.exception("GUI worker failed")
@@ -466,8 +481,12 @@ class App(_AppBase):
             self._handle_error("GUI 收到未知的檔案完成事件。")
             return
 
-        output_name = "" if result.output is None else result.output.name
-        self._upsert_file_row(result.source.name, result.status.value, output_name, str(result.ocr_pages))
+        self._upsert_file_row(
+            _result_source_name(result),
+            result.status.value,
+            _result_output_name(result),
+            str(result.ocr_pages),
+        )
 
     def _handle_done(self, summary: object) -> None:
         if not isinstance(summary, BatchSummary):
@@ -495,9 +514,11 @@ class App(_AppBase):
         self._running = running
         if running:
             self.start_button.configure(state="disabled")
+            self.force_checkbox.configure(state="disabled")
             self.cancel_button.configure(state="normal")
         else:
             self.start_button.configure(state="normal")
+            self.force_checkbox.configure(state="normal")
             self.cancel_button.configure(state="disabled")
 
     def _append_log(self, message: str) -> None:
@@ -547,15 +568,23 @@ class App(_AppBase):
     def _completion_message(self, summary: BatchSummary) -> str:
         failed = sum(result.status is FileStatus.FAILED for result in summary.results)
         skipped = sum(result.status is FileStatus.SKIPPED_ENCRYPTED for result in summary.results)
-        success = len(summary.results) - failed - skipped
+        skipped_done = sum(result.status is FileStatus.SKIPPED_DONE for result in summary.results)
+        success = len(summary.results) - failed - skipped - skipped_done
         state = "已取消" if summary.cancelled else "完成"
         csv_path = "無" if summary.csv_path is None else str(summary.csv_path)
+        csv_note = (
+            "本次無新處理檔案\n"
+            if summary.csv_path is None and not summary.cancelled
+            else ""
+        )
         return (
             f"狀態：{state}\n"
             f"成功：{success}\n"
-            f"跳過：{skipped}\n"
+            f"跳過（加密）：{skipped}\n"
+            f"已跳過（先前已處理）：{skipped_done}\n"
             f"失敗：{failed}\n"
             f"CSV：{csv_path}\n\n"
+            f"{csv_note}"
             "開啟輸出資料夾？"
         )
 
@@ -599,3 +628,20 @@ class App(_AppBase):
             if self._cancel_event is not None:
                 self._cancel_event.set()
         self.destroy()
+
+
+def _result_source_name(result: FileResult) -> str:
+    return result.rel or result.source.name
+
+
+def _result_output_name(result: FileResult) -> str:
+    if result.output is None:
+        return ""
+
+    if not result.rel:
+        return result.output.name
+
+    parent = PurePosixPath(result.rel).parent
+    if parent.as_posix() == ".":
+        return result.output.name
+    return (parent / result.output.name).as_posix()
