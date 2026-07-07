@@ -4,8 +4,8 @@ Primary user guide: [繁體中文 README](README.zh-TW.md)
 
 pdf-ocrer batch-converts scanned PDFs in a folder into searchable dual-layer PDFs.
 It keeps the original page image, adds an invisible text layer with PP-OCRv6 via
-PaddleOCR 3.7, and can rename each output file with any OpenAI-compatible LLM
-using the editable `naming_prompt.txt` prompt.
+the selected OCR engine, and can rename each output file with any
+OpenAI-compatible LLM using the editable `naming_prompt.txt` prompt.
 
 Original PDFs are never modified. Outputs are written to an `OCR輸出` subfolder
 with a timestamped CSV audit table encoded as `utf-8-sig`, so Excel opens it
@@ -39,8 +39,10 @@ field, but GPU execution is not tested.
 
 - Python 3.11 or newer. Python 3.12 is recommended.
 - Windows: Microsoft Visual C++ Redistributable 2019 or newer.
-- First OCR run downloads PP-OCRv6 models, about 100 MB, to
+- PaddleOCR first run downloads PP-OCRv6 models, about 100 MB, to
   `~/.paddlex/official_models`.
+- RapidOCR ships its default ONNX model in the wheel and is the recommended CPU
+  engine for new installs.
 
 For offline machines, copy the whole `official_models` folder from a machine that
 has already run OCR to the same path on the offline machine.
@@ -53,12 +55,31 @@ cd pdf-ocrer
 py -3.12 -m venv .venv
 .\.venv\Scripts\activate
 python -m pip install -U pip
+python -m pip install -e ".[rapidocr]"
+```
+
+Then set the OCR engine in `config.toml`:
+
+```toml
+[ocr]
+engine = "rapidocr"
+```
+
+The future package install form is:
+
+```powershell
+python -m pip install "pdf-ocrer[rapidocr]"
+```
+
+To use PaddleOCR instead, install the Paddle CPU runtime:
+
+```powershell
 python -m pip install -e ".[paddle-cpu]"
 ```
 
-The `paddle-cpu` extra installs `paddlepaddle==3.3.*`, which is the tested CPU
-runtime for PaddleOCR. After a published package exists, the equivalent package
-install will be:
+The `paddle-cpu` extra installs `paddlepaddle==3.2.*`, the tested CPU runtime
+for PaddleOCR with working oneDNN/MKLDNN. After a published package exists, the
+equivalent package install will be:
 
 ```powershell
 python -m pip install "pdf-ocrer[paddle-cpu]"
@@ -103,6 +124,7 @@ pdf-ocrer <folder>
   --config PATH   Use a config file. Default is config.toml in the current directory.
   --no-llm        Force fallback naming, regardless of config.
   --dpi N         Override OCR render DPI.
+  --engine NAME   Override OCR engine for this run: paddle or rapidocr.
   --version       Print the version.
 ```
 
@@ -160,8 +182,9 @@ Important settings:
 
 | Section | Setting | Purpose |
 |---|---|---|
+| `[ocr]` | `engine = "paddle"` | OCR engine. Install `pdf-ocrer[rapidocr]` and set `"rapidocr"` for the recommended CPU path. |
 | `[ocr]` | `dpi = 200` | OCR render resolution. Valid range is 72 to 600. |
-| `[ocr]` | `enable_mkldnn = false` | Required workaround for the PaddlePaddle 3.3.0 oneDNN bug. |
+| `[ocr]` | `enable_mkldnn = false` | Keep false with PaddlePaddle 3.3.x; PaddlePaddle 3.2.x can enable it for speed. |
 | `[ocr]` | `det_model_name`, `rec_model_name` | Use small or tiny PP-OCRv6 models for speed tuning. |
 | `[output]` | `subdir_name = "OCR輸出"` | Output folder name. |
 | `[naming]` | `prompt_file = "naming_prompt.txt"` | User-editable prompt for output names. |
@@ -243,16 +266,38 @@ when documents cannot leave the machine.
 
 ## Performance
 
-Measured baseline on CPU:
+Dense two-page clinic-document benchmark on an AMD Ryzen 5 8600G CPU:
 
-- PP-OCRv6 medium, 200 DPI, `enable_mkldnn=false`: about 22 seconds per page.
+| Engine / config | OCR speed | Notes |
+|---|---:|---|
+| PaddleOCR medium, PaddlePaddle 3.3.x, MKLDNN off | 34.81 s/page | Current compatible baseline. |
+| RapidOCR default | 0.90 s/page | Recommended; about 38.7x faster than the baseline. |
+| PaddleOCR medium, PaddlePaddle 3.2.2, MKLDNN on | 5.06 s/page | About 6.9x faster; same text output as MKLDNN off in the benchmark. |
 
-`enable_mkldnn=false` is the default because PaddlePaddle 3.3.0 currently hits a
-oneDNN runtime error when MKLDNN is enabled. See
-[docs/specs/paddleocr-api-facts.md §2](docs/specs/paddleocr-api-facts.md) for
-the measured failure and workaround.
+See [docs/specs/benchmark-results.md](docs/specs/benchmark-results.md) for the
+full table, accuracy notes, cold-start time, and memory results.
 
-For speed, try smaller PP-OCRv6 models in `config.toml`:
+Recommended CPU setup:
+
+```powershell
+python -m pip install "pdf-ocrer[rapidocr]"
+```
+
+```toml
+[ocr]
+engine = "rapidocr"
+```
+
+PaddleOCR remains available for compatibility. PaddlePaddle 3.3.x has a known
+oneDNN/MKLDNN runtime bug, so keep `enable_mkldnn=false` with 3.3.x. The
+`paddle-cpu` extra now pins PaddlePaddle 3.2.x, where MKLDNN can be enabled:
+
+```toml
+[ocr]
+enable_mkldnn = true
+```
+
+For additional Paddle speed tuning, try smaller PP-OCRv6 models:
 
 ```toml
 [ocr]
@@ -274,6 +319,8 @@ usual accuracy tradeoff.
 - The batch is non-recursive. PDFs in subfolders are not scanned.
 - GPU support is not claimed. The `ocr.device` config field exists, but CPU is
   the tested path.
+- PaddlePaddle 3.3.x cannot use the MKLDNN/oneDNN path reliably; use the
+  `paddle-cpu` extra's 3.2.x pin before enabling `ocr.enable_mkldnn`.
 
 ## Debug Alignment
 

@@ -25,6 +25,9 @@ class OcrConfig:
     det_limit_side_len: int | None = None
     det_model_name: str | None = None
     rec_model_name: str | None = None
+    engine: str = "paddle"
+    cpu_threads: int = 0
+    textline_orientation: bool = True
 
 
 @dataclass(frozen=True)
@@ -275,13 +278,13 @@ def _warn_unknown(name: str) -> None:
 
 
 def _validate(cfg: AppConfig) -> AppConfig:
-    _validate_ocr(cfg.ocr)
+    ocr = _validate_ocr(cfg.ocr)
     _validate_naming(cfg.naming)
     _validate_llm(cfg.llm)
-    return replace(cfg, gui=_validate_gui(cfg.gui))
+    return replace(cfg, ocr=ocr, gui=_validate_gui(cfg.gui))
 
 
-def _validate_ocr(cfg: OcrConfig) -> None:
+def _validate_ocr(cfg: OcrConfig) -> OcrConfig:
     _require_int("dpi", cfg.dpi)
     if not 72 <= cfg.dpi <= 600:
         _range_error("dpi", "72–600")
@@ -298,6 +301,20 @@ def _validate_ocr(cfg: OcrConfig) -> None:
         _require_int("det_limit_side_len", cfg.det_limit_side_len)
         if cfg.det_limit_side_len <= 0:
             _range_error("det_limit_side_len", "大於 0")
+
+    if not isinstance(cfg.engine, str):
+        raise ConfigError("設定欄位 engine 必須是 paddle 或 rapidocr")
+    engine = cfg.engine.casefold()
+    if engine not in {"paddle", "rapidocr"}:
+        raise ConfigError("設定欄位 engine 必須是 paddle 或 rapidocr")
+
+    _require_int("cpu_threads", cfg.cpu_threads)
+    if not 0 <= cfg.cpu_threads <= 64:
+        _range_error("cpu_threads", "0–64")
+
+    _require_bool("textline_orientation", cfg.textline_orientation)
+
+    return cfg if engine == cfg.engine else replace(cfg, engine=engine)
 
 
 def _validate_naming(cfg: NamingConfig) -> None:
@@ -347,6 +364,11 @@ def _require_int(field_name: str, value: object) -> None:
 def _require_number(field_name: str, value: object) -> None:
     if not isinstance(value, int | float) or isinstance(value, bool):
         raise ConfigError(f"設定欄位 {field_name} 必須是數字")
+
+
+def _require_bool(field_name: str, value: object) -> None:
+    if not isinstance(value, bool):
+        raise ConfigError(f"設定欄位 {field_name} 必須是布林值")
 
 
 def _range_error(field_name: str, expected: str) -> None:

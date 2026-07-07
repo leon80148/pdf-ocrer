@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+import tomllib
 import types
 from pathlib import Path
 
@@ -9,6 +10,7 @@ import pymupdf
 from fixtures_gen import GT_LINES
 from pdf_ocrer import __version__
 from pdf_ocrer.cli import main
+from pdf_ocrer.config import ConfigError
 from pdf_ocrer.ocr_engine import OcrLine
 
 _DPI = 200
@@ -66,6 +68,48 @@ def test_main_folder_no_llm_creates_csv_and_passes_dpi(work_folder, capsys) -> N
     assert "CSV:" in stdout
 
 
+def test_main_engine_override_passes_to_engine_factory(work_folder, tmp_path) -> None:
+    _keep_only(work_folder, {"scanned.pdf", "native.pdf"})
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        '[ocr]\nengine = "paddle"\n[naming]\nenabled = false\n',
+        encoding="utf-8",
+    )
+    captured: dict[str, object] = {}
+
+    def engine_factory(ocr_cfg):
+        captured["engine"] = ocr_cfg.engine
+        return FakeEngine()
+
+    exit_code = main(
+        [str(work_folder), "--config", str(config_path), "--engine", "rapidocr"],
+        engine_factory=engine_factory,
+        client_factory=lambda llm_cfg: None,
+    )
+
+    assert exit_code == 0
+    assert captured == {"engine": "rapidocr"}
+
+
+def test_main_create_engine_config_error_reports_install_hint(
+    work_folder,
+    monkeypatch,
+    capsys,
+) -> None:
+    _keep_only(work_folder, {"scanned.pdf"})
+
+    def fake_create_engine(ocr_cfg, log):  # noqa: ANN001
+        raise ConfigError("rapidocr 引擎需要安裝額外套件：pip install pdf-ocrer[rapidocr]")
+
+    monkeypatch.setattr("pdf_ocrer.cli.create_engine", fake_create_engine, raising=False)
+
+    exit_code = main([str(work_folder), "--no-llm", "--engine", "rapidocr"])
+
+    captured = capsys.readouterr()
+    assert exit_code == 1
+    assert "pip install pdf-ocrer[rapidocr]" in captured.err
+
+
 def test_main_naming_disabled_skips_llm_client_for_unknown_provider(work_folder, tmp_path) -> None:
     _keep_only(work_folder, {"scanned.pdf", "native.pdf"})
     config_path = tmp_path / "config.toml"
@@ -99,6 +143,14 @@ def test_main_rejects_dpi_override_before_creating_output(work_folder, capsys) -
     assert exit_code == 1
     assert "設定錯誤: dpi 超出範圍，應為 72–600" in captured.err
     assert not (work_folder / "OCR輸出").exists()
+
+
+def test_pyproject_paddle_cpu_extra_pins_3_2() -> None:
+    pyproject = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
+
+    assert pyproject["project"]["optional-dependencies"]["paddle-cpu"] == [
+        "paddlepaddle==3.2.*"
+    ]
 
 
 def _gt_ocr_lines() -> list[OcrLine]:

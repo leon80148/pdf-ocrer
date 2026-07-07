@@ -37,6 +37,9 @@ def test_defaults_when_no_file(tmp_path):
     cfg = load_config(tmp_path / "nope.toml")
 
     assert cfg.ocr.dpi == 200
+    assert cfg.ocr.engine == "paddle"
+    assert cfg.ocr.cpu_threads == 0
+    assert cfg.ocr.textline_orientation is True
     assert cfg.llm.provider == "openai_compatible"
     assert cfg.gui.appearance == "system"
 
@@ -46,6 +49,56 @@ def test_toml_overrides(tmp_path):
     p.write_text("[ocr]\ndpi = 300\n", encoding="utf-8")
 
     assert load_config(p).ocr.dpi == 300
+
+
+def test_old_ocr_config_loads_new_engine_defaults(tmp_path):
+    p = tmp_path / "c.toml"
+    p.write_text(
+        "[ocr]\n"
+        "dpi = 300\n"
+        "min_confidence = 0.8\n",
+        encoding="utf-8",
+    )
+
+    cfg = load_config(p)
+
+    assert cfg.ocr.engine == "paddle"
+    assert cfg.ocr.cpu_threads == 0
+    assert cfg.ocr.textline_orientation is True
+
+
+def test_ocr_engine_fields_load_from_toml(tmp_path):
+    p = tmp_path / "c.toml"
+    p.write_text(
+        "[ocr]\n"
+        "engine = \"rapidocr\"\n"
+        "cpu_threads = 4\n"
+        "textline_orientation = false\n",
+        encoding="utf-8",
+    )
+
+    cfg = load_config(p)
+
+    assert cfg.ocr.engine == "rapidocr"
+    assert cfg.ocr.cpu_threads == 4
+    assert cfg.ocr.textline_orientation is False
+
+
+def test_invalid_ocr_engine_raises(tmp_path):
+    p = tmp_path / "c.toml"
+    p.write_text("[ocr]\nengine = \"unknown\"\n", encoding="utf-8")
+
+    with pytest.raises(ConfigError, match="engine.*paddle.*rapidocr"):
+        load_config(p)
+
+
+@pytest.mark.parametrize("cpu_threads", [-1, 65])
+def test_invalid_cpu_threads_range_raises(tmp_path, cpu_threads):
+    p = tmp_path / "c.toml"
+    p.write_text(f"[ocr]\ncpu_threads = {cpu_threads}\n", encoding="utf-8")
+
+    with pytest.raises(ConfigError, match="cpu_threads"):
+        load_config(p)
 
 
 def test_gui_appearance_loads(tmp_path):

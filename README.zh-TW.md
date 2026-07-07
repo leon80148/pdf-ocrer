@@ -37,11 +37,30 @@ cd pdf-ocrer
 py -3.12 -m venv .venv
 .\.venv\Scripts\activate
 python -m pip install -U pip
+python -m pip install -e ".[rapidocr]"
+```
+
+然後在 `config.toml` 設定推薦的 OCR 引擎：
+
+```toml
+[ocr]
+engine = "rapidocr"
+```
+
+未來若已發佈成套件，RapidOCR 推薦安裝指令會是：
+
+```powershell
+python -m pip install "pdf-ocrer[rapidocr]"
+```
+
+如果要使用 PaddleOCR 路徑，請安裝 Paddle CPU runtime：
+
+```powershell
 python -m pip install -e ".[paddle-cpu]"
 ```
 
-`paddle-cpu` 會安裝 CPU 版 PaddlePaddle，這是目前測試過的完整 OCR 環境。
-未來若已發佈成套件，完整安裝指令會是：
+`paddle-cpu` 會安裝 `paddlepaddle==3.2.*`，這是目前測試過且 oneDNN/MKLDNN
+可正常加速的 PaddleOCR CPU 環境。未來若已發佈成套件，完整安裝指令會是：
 
 ```powershell
 python -m pip install "pdf-ocrer[paddle-cpu]"
@@ -83,6 +102,7 @@ pdf-ocrer <folder>            # 批次處理資料夾裡的 PDF
   --config PATH               # 指定 config.toml
   --no-llm                    # 不使用 LLM 命名
   --dpi N                     # 指定 OCR 解析度
+  --engine NAME               # 本次執行覆寫 OCR 引擎：paddle 或 rapidocr
   --version                   # 顯示版本
 ```
 
@@ -179,6 +199,14 @@ $env:PDF_OCRER_API_KEY = "..."
 
 完整設定範本請看 [config.example.toml](config.example.toml)。
 
+OCR 引擎可在設定檔指定。預設仍是 `paddle`，但 CPU 使用建議安裝 RapidOCR extra 並改用
+`rapidocr`：
+
+```toml
+[ocr]
+engine = "rapidocr"
+```
+
 圖形介面主題可在設定檔中調整：
 
 ```toml
@@ -188,15 +216,38 @@ appearance = "system"  # 可用 "system"、"light"、"dark"
 
 ## 速度與模型
 
-目前實測基準：
+AMD Ryzen 5 8600G CPU 上的 dense 2 頁診所文件實測：
 
-- CPU、PP-OCRv6 medium、200 DPI、`enable_mkldnn=false`：約 22 秒一頁。
+| 引擎 / 設定 | OCR 速度 | 備註 |
+|---|---:|---|
+| PaddleOCR medium、PaddlePaddle 3.3.x、MKLDNN off | 34.81 秒/頁 | 現行相容基準。 |
+| RapidOCR 預設 | 0.90 秒/頁 | 推薦；約比基準快 38.7x。 |
+| PaddleOCR medium、PaddlePaddle 3.2.2、MKLDNN on | 5.06 秒/頁 | 約快 6.9x；實測輸出與 MKLDNN off 逐字相同。 |
 
-`enable_mkldnn=false` 是必要預設值，因為 PaddlePaddle 3.3.0 的 oneDNN/MKLDNN
-路徑有已知錯誤。細節記錄在
-[docs/specs/paddleocr-api-facts.md §2](docs/specs/paddleocr-api-facts.md)。
+完整數字、精度、冷啟動與記憶體結果請看
+[docs/specs/benchmark-results.md](docs/specs/benchmark-results.md)。
 
-如果速度比準確度更重要，可以在 `config.toml` 嘗試小模型：
+建議 CPU 安裝與設定：
+
+```powershell
+python -m pip install "pdf-ocrer[rapidocr]"
+```
+
+```toml
+[ocr]
+engine = "rapidocr"
+```
+
+PaddleOCR 仍可用於相容路徑。PaddlePaddle 3.3.x 的 oneDNN/MKLDNN 路徑有已知錯誤，
+因此使用 3.3.x 時請維持 `enable_mkldnn=false`。`paddle-cpu` extra 目前釘到
+PaddlePaddle 3.2.x，可開啟 MKLDNN 加速：
+
+```toml
+[ocr]
+enable_mkldnn = true
+```
+
+如果使用 PaddleOCR 且速度比準確度更重要，可以在 `config.toml` 嘗試小模型：
 
 ```toml
 [ocr]
@@ -215,6 +266,8 @@ rec_model_name = "PP-OCRv6_small_rec"
 - 需要密碼的 PDF 會被略過，並記錄在 CSV。
 - 不會掃描子資料夾。
 - `ocr.device` 設定欄位存在，但目前只宣稱 CPU 路徑已測試，不宣稱 GPU 支援。
+- PaddlePaddle 3.3.x 不能可靠使用 MKLDNN/oneDNN；要開啟 `ocr.enable_mkldnn` 前，
+  請使用 `paddle-cpu` extra 釘住的 3.2.x。
 
 ## 對位除錯
 

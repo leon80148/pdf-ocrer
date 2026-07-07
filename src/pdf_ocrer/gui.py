@@ -23,7 +23,7 @@ from pdf_ocrer import __version__
 from pdf_ocrer.cli import DEFAULT_NAMING_PROMPT, _load_prompt
 from pdf_ocrer.config import ConfigError, GuiConfig, LlmConfig, OcrConfig, load_config
 from pdf_ocrer.llm_providers import LLMClient, create_client
-from pdf_ocrer.ocr_engine import OcrEngineProtocol
+from pdf_ocrer.ocr_engine import OcrEngineProtocol, create_engine
 from pdf_ocrer.pipeline import BatchSummary, FileResult, FileStatus, run_batch
 from pdf_ocrer.settings_dialog import SettingsDialog
 
@@ -399,9 +399,7 @@ class App(_AppBase):
         if self._engine_factory is not None:
             return self._engine_factory(cfg)
 
-        from pdf_ocrer.ocr_engine import PaddleOcrEngine
-
-        return PaddleOcrEngine(cfg, log=log_cb)
+        return create_engine(cfg, log_cb)
 
     def _queue_log(self, message: str) -> None:
         self._queue.put(("log", message))

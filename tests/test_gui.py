@@ -9,6 +9,7 @@ tk = pytest.importorskip("tkinter")
 ctk = pytest.importorskip("customtkinter")
 
 from pdf_ocrer import __version__  # noqa: E402
+from pdf_ocrer.config import OcrConfig  # noqa: E402
 from pdf_ocrer.gui import App, _folder_from_drop_data  # noqa: E402
 from pdf_ocrer.pipeline import BatchSummary, FileResult, FileStatus  # noqa: E402
 
@@ -146,6 +147,27 @@ def test_open_settings_dialog_passes_config_path_and_open_path(
     assert dialogs[0].open_path is app._open_path
     assert dialogs[0].grabbed is True
     assert waited == [dialogs[0]]
+
+
+def test_create_engine_delegates_to_default_factory(monkeypatch: pytest.MonkeyPatch) -> None:
+    app = App.__new__(App)
+    app._engine_factory = None
+    cfg = OcrConfig(engine="rapidocr")
+    sentinel = object()
+    captured: dict[str, object] = {}
+
+    def log_cb(message: str) -> None:
+        pass
+
+    def fake_create_engine(ocr_cfg: OcrConfig, log: object) -> object:
+        captured["cfg"] = ocr_cfg
+        captured["log"] = log
+        return sentinel
+
+    monkeypatch.setattr("pdf_ocrer.gui.create_engine", fake_create_engine, raising=False)
+
+    assert app._create_engine(cfg, log_cb) is sentinel
+    assert captured == {"cfg": cfg, "log": log_cb}
 
 
 def test_worker_thread_is_not_daemon(app: App, work_folder: Path, monkeypatch) -> None:

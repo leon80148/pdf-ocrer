@@ -6,7 +6,7 @@ from typing import Any, Protocol
 
 import numpy as np
 
-from pdf_ocrer.config import OcrConfig
+from pdf_ocrer.config import ConfigError, OcrConfig
 
 
 @dataclass(frozen=True)
@@ -18,6 +18,18 @@ class OcrLine:
 
 class OcrEngineProtocol(Protocol):
     def recognize(self, img_rgb: np.ndarray) -> list[OcrLine]: ...
+
+
+def create_engine(cfg: OcrConfig, log: Callable[[str], None] | None = None) -> OcrEngineProtocol:
+    engine = cfg.engine.casefold() if isinstance(cfg.engine, str) else ""
+    if engine == "paddle":
+        return PaddleOcrEngine(cfg, log)
+    if engine == "rapidocr":
+        from pdf_ocrer.rapidocr_engine import RapidOcrEngine
+
+        return RapidOcrEngine(cfg, log)
+
+    raise ConfigError("設定欄位 engine 必須是 paddle 或 rapidocr")
 
 
 def lines_from_prediction(pred: Mapping[str, Any], min_confidence: float) -> list[OcrLine]:
@@ -72,10 +84,12 @@ class PaddleOcrEngine:
                 "ocr_version": "PP-OCRv6",
                 "use_doc_orientation_classify": False,
                 "use_doc_unwarping": False,
-                "use_textline_orientation": True,
+                "use_textline_orientation": self._cfg.textline_orientation,
                 "device": self._cfg.device,
                 "enable_mkldnn": self._cfg.enable_mkldnn,
             }
+            if self._cfg.cpu_threads > 0:
+                kwargs["cpu_threads"] = self._cfg.cpu_threads
             if self._cfg.det_model_name is not None:
                 kwargs["text_detection_model_name"] = self._cfg.det_model_name
             if self._cfg.rec_model_name is not None:

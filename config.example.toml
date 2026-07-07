@@ -14,7 +14,7 @@ skip_pages_with_text = true
 min_existing_chars = 30
 # OCR 執行裝置。預設：cpu。
 device = "cpu"
-# 是否啟用 MKLDNN/oneDNN。預設：false。
+# oneDNN 加速。paddlepaddle 3.2.x 可設 true（medium 快 ~7x）；3.3.x 有 bug 必須 false（詳 docs/specs/paddleocr-api-facts.md §2）
 enable_mkldnn = false
 # 文字偵測長邊限制。預設：未設定，使用 PaddleOCR 函式庫預設值。
 # det_limit_side_len = 1536
@@ -22,6 +22,12 @@ enable_mkldnn = false
 # det_model_name = "PP-OCRv6_small_det"
 # 辨識模型名稱。預設：未設定，使用 PaddleOCR 函式庫預設值。
 # rec_model_name = "PP-OCRv6_small_rec"
+# OCR 引擎："paddle"（預設）或 "rapidocr"（推薦，快 ~38x，需 pip install pdf-ocrer[rapidocr]）
+engine = "paddle"
+# 推論執行緒數。0 = 函式庫預設。paddle→cpu_threads；rapidocr→intra_op_num_threads
+cpu_threads = 0
+# 文字行方向偵測（處理上下顛倒的行）。預設 true
+textline_orientation = true
 
 [output]
 # 輸出子資料夾名稱。預設：OCR輸出。

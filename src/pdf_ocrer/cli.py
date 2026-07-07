@@ -9,7 +9,7 @@ from pathlib import Path
 from pdf_ocrer import __version__
 from pdf_ocrer.config import ConfigError, LlmConfig, OcrConfig, load_config
 from pdf_ocrer.llm_providers import LLMClient, create_client
-from pdf_ocrer.ocr_engine import OcrEngineProtocol
+from pdf_ocrer.ocr_engine import OcrEngineProtocol, create_engine
 from pdf_ocrer.pipeline import BatchSummary, FileStatus, run_batch
 
 DEFAULT_NAMING_PROMPT = """你是診所行政檔案命名助手。根據下方 OCR 文字，輸出一個檔名（不含副檔名）。
@@ -62,12 +62,15 @@ def main(
             cfg = replace(cfg, llm=replace(cfg.llm, provider="none"))
         if args.dpi is not None:
             cfg = replace(cfg, ocr=replace(cfg.ocr, dpi=args.dpi))
+        if args.engine is not None:
+            cfg = replace(cfg, ocr=replace(cfg.ocr, engine=args.engine))
 
         prompt_template = _load_prompt(Path(cfg.naming.prompt_file))
+        log_cb = print
         engine = (
             engine_factory(cfg.ocr)
             if engine_factory is not None
-            else _create_default_engine(cfg.ocr)
+            else _create_default_engine(cfg.ocr, log_cb)
         )
         client = None
         if cfg.naming.enabled:
@@ -79,7 +82,7 @@ def main(
             client,
             prompt_template,
             progress_cb=_print_progress,
-            log_cb=print,
+            log_cb=log_cb,
         )
     except ConfigError as exc:
         print(f"設定錯誤: {exc}", file=sys.stderr)
@@ -99,14 +102,16 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--config", type=Path, default=None)
     parser.add_argument("--no-llm", action="store_true")
     parser.add_argument("--dpi", type=int)
+    parser.add_argument("--engine", choices=("paddle", "rapidocr"), default=None)
     parser.add_argument("--version", action="store_true")
     return parser
 
 
-def _create_default_engine(cfg: OcrConfig) -> OcrEngineProtocol:
-    from pdf_ocrer.ocr_engine import PaddleOcrEngine
-
-    return PaddleOcrEngine(cfg)
+def _create_default_engine(
+    cfg: OcrConfig,
+    log: Callable[[str], None] | None = None,
+) -> OcrEngineProtocol:
+    return create_engine(cfg, log)
 
 
 def _load_prompt(path: Path) -> str:
