@@ -42,12 +42,30 @@ EngineFactory = Callable[[OcrConfig], OcrEngineProtocol]
 ClientFactory = Callable[[LlmConfig], LLMClient | None]
 
 
+def _configure_utf8_output() -> None:
+    """Force stdout/stderr to UTF-8 so Chinese output never crashes the CLI.
+
+    On a Windows console whose code page is not Chinese (e.g. cp1252), printing
+    the summary/log would otherwise raise UnicodeEncodeError. reconfigure() is a
+    no-op-friendly best effort: guarded for streams that don't support it.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            continue
+        try:
+            reconfigure(encoding="utf-8")
+        except (ValueError, OSError):
+            pass
+
+
 def main(
     argv: list[str] | None = None,
     *,
     engine_factory: EngineFactory | None = None,
     client_factory: ClientFactory | None = None,
 ) -> int:
+    _configure_utf8_output()
     parser = _build_parser()
     args = parser.parse_args(argv)
 

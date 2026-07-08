@@ -552,3 +552,29 @@ def _flush_pdf_ocrer_file_handlers() -> None:
     for handler in logging.getLogger("pdf_ocrer").handlers:
         if getattr(handler, "_pdf_ocrer_file_handler", False):
             handler.flush()
+
+
+def test_configure_utf8_output_reconfigures_streams(monkeypatch):
+    from pdf_ocrer.cli import _configure_utf8_output
+
+    calls = []
+
+    class FakeStream:
+        def reconfigure(self, **kwargs):
+            calls.append(kwargs)
+
+    monkeypatch.setattr(sys, "stdout", FakeStream())
+    monkeypatch.setattr(sys, "stderr", FakeStream())
+
+    _configure_utf8_output()
+
+    assert calls == [{"encoding": "utf-8"}, {"encoding": "utf-8"}]
+
+
+def test_configure_utf8_output_tolerates_streams_without_reconfigure(monkeypatch):
+    from pdf_ocrer.cli import _configure_utf8_output
+
+    monkeypatch.setattr(sys, "stdout", object())
+    monkeypatch.setattr(sys, "stderr", object())
+
+    _configure_utf8_output()  # must not raise
