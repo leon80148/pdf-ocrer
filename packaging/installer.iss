@@ -48,10 +48,11 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 
 [Files]
 ; The whole PyInstaller onedir tree (both exes + shared _internal\).
+; config.installer.toml is bundled inside _internal\; on first run the app seeds
+; a per-user %APPDATA%\pdf_ocrer\config.toml from it (see config.bootstrap_frozen_config).
+; Nothing user-writable is placed under Program Files, so non-admin users can edit
+; settings and the config is found no matter which folder the app is launched from.
 Source: "dist\pdf_ocrer\*"; DestDir: "{app}"; Flags: recursesubdirs createallsubdirs ignoreversion
-; First-run config: created only if absent, and never removed on uninstall or
-; overwritten on upgrade — protects a clinic's customised settings.
-Source: "config.installer.toml"; DestDir: "{app}"; DestName: "config.toml"; Flags: onlyifdoesntexist uninsneveruninstall
 
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{app}"

@@ -225,6 +225,27 @@ def test_device_status_message_reports_active_gpu() -> None:
 
     assert msg is not None
     assert "CUDAExecutionProvider" in msg
+    # Must not over-claim actual execution; onnxruntime can still fall back at
+    # session creation, so the message stays accurate about that possibility.
+    assert "CPU" in msg
+
+
+def test_onnxruntime_conflict_message_none_for_single_runtime() -> None:
+    from pdf_ocrer.rapidocr_engine import _onnxruntime_conflict_message
+
+    assert _onnxruntime_conflict_message(["onnxruntime"]) is None
+    assert _onnxruntime_conflict_message(["onnxruntime-directml"]) is None
+    assert _onnxruntime_conflict_message([]) is None
+
+
+def test_onnxruntime_conflict_message_warns_on_multiple_runtimes() -> None:
+    from pdf_ocrer.rapidocr_engine import _onnxruntime_conflict_message
+
+    msg = _onnxruntime_conflict_message(["onnxruntime", "onnxruntime-directml"])
+
+    assert msg is not None
+    assert "onnxruntime" in msg
+    assert "onnxruntime-directml" in msg
 
 
 def test_device_status_message_warns_when_provider_unavailable() -> None:

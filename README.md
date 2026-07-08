@@ -126,13 +126,17 @@ that matches your hardware; the two are mutually exclusive (they install differe
 
 ```powershell
 # NVIDIA GPU (CUDA):
-python -m pip uninstall -y onnxruntime
+python -m pip uninstall -y onnxruntime onnxruntime-gpu onnxruntime-directml
 python -m pip install -e ".[rapidocr-gpu-cuda]"
 
 # Any DirectX 12 GPU — NVIDIA, AMD, or Intel integrated (DirectML, Windows):
-python -m pip uninstall -y onnxruntime
+python -m pip uninstall -y onnxruntime onnxruntime-gpu onnxruntime-directml
 python -m pip install -e ".[rapidocr-gpu-dml]"
 ```
+
+Uninstalling all three variants first avoids a conflict: they share the
+`onnxruntime` import name, so only one may be installed at a time. If more than
+one is present, the app logs a warning at startup.
 
 Then in `config.toml`:
 

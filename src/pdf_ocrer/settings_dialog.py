@@ -35,6 +35,10 @@ MODEL_SIZE_PAIRS: dict[str, ModelPair] = {
 }
 _MODEL_PAIR_LABELS = {pair: label for label, pair in MODEL_SIZE_PAIRS.items()}
 
+# rapidocr execution device and model size (see docs/specs/rapidocr-api-facts.md).
+DEVICE_VALUES = ("cpu", "cuda", "dml")
+RAPIDOCR_MODEL_TYPES = ("mobile", "tiny", "small", "medium", "server")
+
 
 def model_size_label_for_pair(det_model_name: str | None, rec_model_name: str | None) -> str:
     return _MODEL_PAIR_LABELS.get((det_model_name, rec_model_name), MODEL_SIZE_CUSTOM_LABEL)
@@ -92,17 +96,41 @@ class SettingsDialog(ctk.CTkToplevel):
         self.engine_menu.grid(row=1, column=1, sticky="ew", padx=(8, 12), pady=4)
         self.engine_menu.set(settings.engine)
 
-        self._label(frame, "DPI", row=1)
+        self._label(frame, "執行裝置", row=1)
+        self.device_var = tk.StringVar(master=self, value=settings.device)
+        self.device_menu = ctk.CTkOptionMenu(
+            frame,
+            values=list(DEVICE_VALUES),
+            variable=self.device_var,
+        )
+        self.device_menu.grid(row=2, column=1, sticky="ew", padx=(8, 12), pady=4)
+        self.device_menu.set(settings.device)
+        self.device_help_label = ctk.CTkLabel(
+            frame, text="cuda/dml 僅適用 rapidocr（需另裝 GPU 套件）", anchor="w"
+        )
+        self.device_help_label.grid(row=3, column=1, sticky="w", padx=(8, 12))
+
+        self._label(frame, "DPI", row=3)
         self.dpi_entry = ctk.CTkEntry(frame)
-        self.dpi_entry.grid(row=2, column=1, sticky="ew", padx=(8, 12), pady=4)
+        self.dpi_entry.grid(row=4, column=1, sticky="ew", padx=(8, 12), pady=4)
         self._set_entry_text(self.dpi_entry, str(settings.dpi))
 
-        self._label(frame, "最低信心分數", row=2)
+        self._label(frame, "最低信心分數", row=4)
         self.min_confidence_entry = ctk.CTkEntry(frame)
-        self.min_confidence_entry.grid(row=3, column=1, sticky="ew", padx=(8, 12), pady=4)
+        self.min_confidence_entry.grid(row=5, column=1, sticky="ew", padx=(8, 12), pady=4)
         self._set_entry_text(self.min_confidence_entry, str(settings.min_confidence))
 
-        self._label(frame, "模型大小", row=3)
+        self._label(frame, "模型大小（rapidocr）", row=5)
+        self.model_type_var = tk.StringVar(master=self, value=settings.model_type)
+        self.model_type_menu = ctk.CTkOptionMenu(
+            frame,
+            values=list(RAPIDOCR_MODEL_TYPES),
+            variable=self.model_type_var,
+        )
+        self.model_type_menu.grid(row=6, column=1, sticky="ew", padx=(8, 12), pady=4)
+        self.model_type_menu.set(settings.model_type)
+
+        self._label(frame, "模型大小（paddle）", row=6)
         model_label = model_size_label_for_pair(settings.det_model_name, settings.rec_model_name)
         self.model_size_var = tk.StringVar(master=self, value=model_label)
         self.model_size_menu = ctk.CTkOptionMenu(
@@ -110,16 +138,16 @@ class SettingsDialog(ctk.CTkToplevel):
             values=model_size_dropdown_values(settings.det_model_name, settings.rec_model_name),
             variable=self.model_size_var,
         )
-        self.model_size_menu.grid(row=4, column=1, sticky="ew", padx=(8, 12), pady=4)
+        self.model_size_menu.grid(row=7, column=1, sticky="ew", padx=(8, 12), pady=4)
         self.model_size_menu.set(model_label)
 
-        self._label(frame, "同時處理檔案數", row=4)
+        self._label(frame, "同時處理檔案數", row=7)
         self.workers_entry = ctk.CTkEntry(frame)
-        self.workers_entry.grid(row=5, column=1, sticky="ew", padx=(8, 12), pady=4)
+        self.workers_entry.grid(row=8, column=1, sticky="ew", padx=(8, 12), pady=4)
         self._set_entry_text(self.workers_entry, str(settings.workers))
 
         self.workers_help_label = ctk.CTkLabel(frame, text="0=自動、1=循序", anchor="w")
-        self.workers_help_label.grid(row=6, column=1, sticky="w", padx=(8, 12), pady=(0, 12))
+        self.workers_help_label.grid(row=9, column=1, sticky="w", padx=(8, 12), pady=(0, 12))
 
     def _build_naming_section(self, settings: CommonSettings) -> None:
         frame = self._section_frame("命名", row=1)
@@ -207,6 +235,8 @@ class SettingsDialog(ctk.CTkToplevel):
                 engine=self.engine_var.get(),
                 dpi=int(self.dpi_entry.get().strip()),
                 min_confidence=float(self.min_confidence_entry.get().strip()),
+                device=self.device_var.get(),
+                model_type=self.model_type_var.get(),
                 det_model_name=det_model_name,
                 rec_model_name=rec_model_name,
                 workers=int(self.workers_entry.get().strip()),

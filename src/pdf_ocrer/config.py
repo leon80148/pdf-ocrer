@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import sys
 import tomllib
 import warnings
 from collections.abc import MutableMapping
@@ -118,6 +119,8 @@ class CommonSettings:
     engine: str = "paddle"
     dpi: int = 200
     min_confidence: float = 0.5
+    device: str = "cpu"
+    model_type: str = "small"
     det_model_name: str | None = None
     rec_model_name: str | None = None
     workers: int = 1
@@ -195,12 +198,81 @@ def ensure_config_file(path: Path) -> None:
     config_path.write_text("", encoding="utf-8")
 
 
+def frozen_data_dir() -> Path | None:
+    """User-writable app-data dir when running as a frozen (packaged) app, else None.
+
+    A packaged install lives under Program Files, which is not user-writable and
+    whose location is independent of the process working directory. Keeping the
+    config there would break settings saves for non-admin users and would make a
+    launch from any folder other than the install dir miss the config entirely.
+    So the frozen app keeps its config under %APPDATA%\\pdf_ocrer instead.
+    """
+    if not getattr(sys, "frozen", False):
+        return None
+    appdata = os.environ.get("APPDATA")
+    if appdata:
+        return Path(appdata) / "pdf_ocrer"
+    return Path.home() / ".pdf_ocrer"
+
+
+def default_config_path() -> Path:
+    """Where the CLI/GUI look for config.toml when no explicit path is given.
+
+    Frozen app: per-user %APPDATA%\\pdf_ocrer\\config.toml. Source/dev: config.toml
+    relative to the working directory (unchanged behavior).
+    """
+    data_dir = frozen_data_dir()
+    return (data_dir / "config.toml") if data_dir is not None else Path("config.toml")
+
+
+def resolve_prompt_path(prompt_file: str, config_path: Path) -> Path:
+    """Resolve a (possibly relative) naming-prompt path against the config's dir.
+
+    Keeps the prompt file next to config.toml, so the frozen app writes it to the
+    user-writable %APPDATA% dir instead of Program Files. Absolute paths are used
+    as-is. In source mode config_path is ``config.toml`` (cwd), preserving the
+    previous cwd-relative behavior.
+    """
+    prompt = Path(prompt_file)
+    return prompt if prompt.is_absolute() else Path(config_path).parent / prompt
+
+
+def _bundled_resource(name: str) -> Path | None:
+    base = getattr(sys, "_MEIPASS", None)
+    return Path(base) / name if base else None
+
+
+def bootstrap_frozen_config(path: Path) -> None:
+    """On a frozen app's first run, seed the per-user config from the bundle.
+
+    No-op when not frozen or when the config already exists (never overwrites a
+    user's customized config). Failures are swallowed: the app still runs on the
+    in-memory defaults if seeding is not possible.
+    """
+    if frozen_data_dir() is None:
+        return
+    config_path = Path(path)
+    if config_path.exists():
+        return
+
+    source = _bundled_resource("config.installer.toml") or _bundled_resource("config.example.toml")
+    if source is None or not source.exists():
+        return
+    try:
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(source, config_path)
+    except OSError:
+        pass
+
+
 def read_common_settings(path: Path) -> CommonSettings:
     cfg = load_config(path)
     return CommonSettings(
         engine=cfg.ocr.engine,
         dpi=cfg.ocr.dpi,
         min_confidence=cfg.ocr.min_confidence,
+        device=cfg.ocr.device,
+        model_type=cfg.ocr.model_type,
         det_model_name=cfg.ocr.det_model_name,
         rec_model_name=cfg.ocr.rec_model_name,
         workers=cfg.performance.workers,
@@ -234,6 +306,8 @@ def apply_common_settings(path: Path, settings: CommonSettings) -> None:
     ocr_table["engine"] = settings.engine
     ocr_table["dpi"] = settings.dpi
     ocr_table["min_confidence"] = settings.min_confidence
+    ocr_table["device"] = settings.device
+    ocr_table["model_type"] = settings.model_type
     _set_optional_toml_value(ocr_table, "det_model_name", settings.det_model_name)
     _set_optional_toml_value(ocr_table, "rec_model_name", settings.rec_model_name)
     performance_table["workers"] = settings.workers
@@ -258,6 +332,8 @@ def _validate_common_settings(
         engine=settings.engine,
         dpi=settings.dpi,
         min_confidence=settings.min_confidence,
+        device=settings.device,
+        model_type=settings.model_type,
         det_model_name=settings.det_model_name,
         rec_model_name=settings.rec_model_name,
     )

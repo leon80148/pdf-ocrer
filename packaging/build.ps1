@@ -1,7 +1,10 @@
-#Requires -Version 5.1
+#Requires -Version 7.0
 <#
 .SYNOPSIS
   Build the pdf-ocrer Windows installer (PyInstaller onedir + Inno Setup).
+
+  Run with PowerShell 7+ (pwsh), e.g. `pwsh packaging/build.ps1`. It uses 7-only
+  syntax (ternary, null-conditional) and is invoked via pwsh in CI.
 
 .DESCRIPTION
   Single source of truth for both local builds and the GitHub Actions release

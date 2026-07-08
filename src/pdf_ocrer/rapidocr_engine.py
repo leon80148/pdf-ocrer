@@ -73,6 +73,10 @@ class RapidOcrEngine:
         if self._log is None or self._cfg.device.casefold() == "cpu":
             return
 
+        conflict = _onnxruntime_conflict_message(_installed_onnxruntime_runtimes())
+        if conflict is not None:
+            self._log(conflict)
+
         import onnxruntime
 
         message = _device_status_message(self._cfg.device, onnxruntime.get_available_providers())
@@ -106,6 +110,9 @@ def _rapidocr_params(cfg: OcrConfig) -> dict[str, object]:
     return params
 
 
+_ONNXRUNTIME_RUNTIMES = ("onnxruntime", "onnxruntime-gpu", "onnxruntime-directml")
+
+
 def _device_status_message(device: str, available_providers: list[str]) -> str | None:
     device = device.casefold()
     provider = _PROVIDER_FOR_DEVICE.get(device)
@@ -113,13 +120,39 @@ def _device_status_message(device: str, available_providers: list[str]) -> str |
         return None
 
     if provider in available_providers:
-        return f"OCR 使用 GPU 加速（{provider}）"
+        # The provider is available in the installed onnxruntime build, but the
+        # ONNX session may still fall back to CPU at creation (driver/DLL/runtime
+        # mismatch). Report accurately rather than claiming active GPU execution.
+        return f"OCR 已啟用 GPU provider {provider}（若實際不支援會自動回退 CPU）"
 
     return (
         f"警告：已設定 device={device}，但目前安裝的 onnxruntime 不支援 {provider}"
         f"（可用：{', '.join(available_providers)}），將改以 CPU 執行。"
         f"請安裝對應套件：{_EXTRA_FOR_DEVICE[device]}（需先移除已安裝的 CPU 版 onnxruntime）。"
     )
+
+
+def _onnxruntime_conflict_message(installed_runtimes: list[str]) -> str | None:
+    if len(installed_runtimes) <= 1:
+        return None
+    return (
+        f"警告：偵測到多個 onnxruntime 套件同時安裝（{', '.join(installed_runtimes)}），"
+        "它們共用同一匯入名稱會互相衝突、可能使用到非預期的執行後端。"
+        "請只保留一個：pip uninstall " + " ".join(installed_runtimes) + " 後重新安裝需要的那一個。"
+    )
+
+
+def _installed_onnxruntime_runtimes() -> list[str]:
+    import importlib.metadata as metadata
+
+    found = []
+    for name in _ONNXRUNTIME_RUNTIMES:
+        try:
+            metadata.version(name)
+        except metadata.PackageNotFoundError:
+            continue
+        found.append(name)
+    return found
 
 
 def _rapidocr_available() -> bool:

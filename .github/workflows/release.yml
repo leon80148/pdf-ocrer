@@ -45,6 +45,21 @@ jobs:
         shell: pwsh
         run: pwsh packaging/build.ps1
 
+      - name: Smoke-test frozen CLI (offline OCR from an arbitrary folder)
+        shell: pwsh
+        run: |
+          $work = New-Item -ItemType Directory -Force -Path "$env:TEMP\pdfocr_smoke"
+          python -c "import sys; sys.path.insert(0, 'tests'); import fixtures_gen; from pathlib import Path; fixtures_gen.build_scanned(Path(r'$work') / 'scan.pdf')"
+          $exe = Join-Path $env:GITHUB_WORKSPACE "packaging\dist\pdf_ocrer\pdf-ocrer.exe"
+          # Launch from a folder that is NOT the app/install dir: proves config
+          # resolution is CWD-independent and the frozen app bootstraps its config.
+          Push-Location $work
+          try { & $exe $work --no-llm } finally { Pop-Location }
+          $out = Join-Path $work "OCR輸出"
+          if (-not (Test-Path $out)) { throw "frozen CLI produced no output dir" }
+          if (-not (Get-ChildItem $out -Filter "*_OCR.pdf")) { throw "frozen CLI produced no searchable PDF" }
+          Write-Host "Frozen CLI offline smoke test passed"
+
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
-from dataclasses import replace
+import sys
 import warnings
+from dataclasses import replace
+from pathlib import Path
 
 import pytest
 
@@ -30,6 +32,8 @@ def _common_settings(**overrides: object) -> CommonSettings:
         "engine": "rapidocr",
         "dpi": 300,
         "min_confidence": 0.75,
+        "device": "cpu",
+        "model_type": "small",
         "det_model_name": "PP-OCRv6_mobile_det",
         "rec_model_name": "PP-OCRv6_mobile_rec",
         "workers": 3,
@@ -41,6 +45,25 @@ def _common_settings(**overrides: object) -> CommonSettings:
     }
     values.update(overrides)
     return CommonSettings(**values)
+
+
+def test_common_settings_roundtrip_device_and_model_type(tmp_path):
+    config_path = tmp_path / "config.toml"
+    settings = _common_settings(device="dml", model_type="server")
+
+    apply_common_settings(config_path, settings)
+
+    assert read_common_settings(config_path) == settings
+    cfg = load_config(config_path)
+    assert cfg.ocr.device == "dml"
+    assert cfg.ocr.model_type == "server"
+
+
+def test_apply_common_settings_rejects_invalid_device(tmp_path):
+    config_path = tmp_path / "config.toml"
+
+    with pytest.raises(ConfigError, match="device"):
+        apply_common_settings(config_path, _common_settings(device="gpu"))
 
 
 def test_defaults_when_no_file(tmp_path):
@@ -355,6 +378,82 @@ def test_old_config_loads_device_and_model_type_defaults(tmp_path):
 
     assert cfg.ocr.device == "cpu"
     assert cfg.ocr.model_type == "small"
+
+
+def test_default_config_path_is_cwd_relative_when_not_frozen(monkeypatch):
+    from pdf_ocrer.config import default_config_path
+
+    monkeypatch.delattr(sys, "frozen", raising=False)
+
+    assert default_config_path() == Path("config.toml")
+
+
+def test_default_config_path_is_per_user_when_frozen(monkeypatch, tmp_path):
+    from pdf_ocrer.config import default_config_path
+
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setenv("APPDATA", str(tmp_path))
+
+    assert default_config_path() == tmp_path / "pdf_ocrer" / "config.toml"
+
+
+def test_resolve_prompt_path_relative_to_config_dir():
+    from pdf_ocrer.config import resolve_prompt_path
+
+    assert resolve_prompt_path("naming_prompt.txt", Path("/data/pdf_ocrer/config.toml")) == Path(
+        "/data/pdf_ocrer/naming_prompt.txt"
+    )
+    absolute = Path("/etc/custom_prompt.txt")
+    assert resolve_prompt_path(str(absolute), Path("/data/config.toml")) == absolute
+
+
+def test_bootstrap_frozen_config_seeds_from_bundle(monkeypatch, tmp_path):
+    from pdf_ocrer import config as config_mod
+
+    meipass = tmp_path / "_internal"
+    meipass.mkdir()
+    (meipass / "config.installer.toml").write_text(
+        '[ocr]\nengine = "rapidocr"\n', encoding="utf-8"
+    )
+    target = tmp_path / "appdata" / "pdf_ocrer" / "config.toml"
+
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(sys, "_MEIPASS", str(meipass), raising=False)
+
+    config_mod.bootstrap_frozen_config(target)
+
+    assert target.exists()
+    assert load_config(target).ocr.engine == "rapidocr"
+
+
+def test_bootstrap_frozen_config_is_noop_when_not_frozen(monkeypatch, tmp_path):
+    from pdf_ocrer import config as config_mod
+
+    monkeypatch.delattr(sys, "frozen", raising=False)
+    target = tmp_path / "config.toml"
+
+    config_mod.bootstrap_frozen_config(target)
+
+    assert not target.exists()
+
+
+def test_bootstrap_frozen_config_does_not_overwrite_existing(monkeypatch, tmp_path):
+    from pdf_ocrer import config as config_mod
+
+    meipass = tmp_path / "_internal"
+    meipass.mkdir()
+    (meipass / "config.installer.toml").write_text(
+        '[ocr]\nengine = "rapidocr"\n', encoding="utf-8"
+    )
+    target = tmp_path / "config.toml"
+    target.write_text('[ocr]\ndpi = 250\n', encoding="utf-8")
+
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(sys, "_MEIPASS", str(meipass), raising=False)
+
+    config_mod.bootstrap_frozen_config(target)
+
+    assert load_config(target).ocr.dpi == 250  # existing user config preserved
 
 
 def test_gui_appearance_loads(tmp_path):

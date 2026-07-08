@@ -25,8 +25,10 @@ attached and auto-generated release notes.
 
 ## Building locally
 
-Requires Python 3.12 and Inno Setup 6 (`winget install JRSoftware.InnoSetup` or
-`choco install innosetup`).
+Requires Python 3.12, **PowerShell 7+ (`pwsh`)**, and Inno Setup 6
+(`winget install JRSoftware.InnoSetup` or `choco install innosetup`).
+`build.ps1` uses PowerShell 7 syntax and will not run on stock Windows
+PowerShell 5.1.
 
 ```powershell
 pwsh packaging/build.ps1            # reuses the build venv (fast)
