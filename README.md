@@ -1,5 +1,9 @@
 # pdf-ocrer
 
+[![Release](https://img.shields.io/github/v/release/leon80148/pdf-ocrer?sort=semver)](https://github.com/leon80148/pdf-ocrer/releases/latest)
+[![Release build](https://github.com/leon80148/pdf-ocrer/actions/workflows/release.yml/badge.svg)](https://github.com/leon80148/pdf-ocrer/actions/workflows/release.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
 Primary user guide: [繁體中文 README](README.zh-TW.md)
 
 pdf-ocrer batch-converts scanned PDFs and supported image files in a folder into
@@ -12,14 +16,34 @@ Original PDFs are never modified. Outputs are written to an `OCR輸出` subfolde
 When a run processes new files, it also writes a timestamped CSV audit table
 encoded as `utf-8-sig`, so Excel opens it cleanly.
 
+## Download & Install (Windows)
+
+**Most users:** you do **not** need Python. Download the installer, double-click,
+done.
+
+1. Go to the [**latest release**](https://github.com/leon80148/pdf-ocrer/releases/latest).
+2. Download `pdf-ocrer-setup-<version>.exe`.
+3. Run it and follow the wizard. Launch **pdf-ocrer** from the Start Menu.
+
+Because the installer is not code-signed, Windows SmartScreen may show
+"Windows protected your PC" on first run — click **More info → Run anyway**
+(normal for free open-source apps).
+
+System requirements: Windows 10/11 64-bit, about 350 MB of free disk space. The
+installer bundles the RapidOCR engine and its OCR models, so it works fully
+offline — no model download on first use. Developers who want the PaddleOCR
+engine or GPU acceleration should install from source instead (see below).
+
 ## Status
 
 This is a Windows-first Python desktop/CLI tool. It should work on other
 platforms supported by the dependencies, but the examples and packaging are
 currently optimized for Windows.
 
-The project is source-install first until a package is published. Do not assume
-`pip install pdf-ocrer` is available from PyPI yet.
+The Windows installer above is the recommended path for end users. Installing
+from source (below) is for developers, non-Windows platforms, the PaddleOCR
+engine, or GPU acceleration. `pip install pdf-ocrer` from PyPI is not available
+yet.
 
 ## What It Does
 
@@ -36,8 +60,9 @@ The project is source-install first until a package is published. Do not assume
   the batch.
 
 Non-goals for v1: layout reconstruction, Markdown/table extraction, watermark
-removal, image cleanup, and verified GPU support. The config has an `ocr.device`
-field, but GPU execution is not tested.
+removal, and image cleanup. GPU acceleration is available for the RapidOCR engine
+from a source/pip install (see [GPU Acceleration](#gpu-acceleration-advanced));
+the packaged installer is CPU-only.
 
 ## Requirements
 
@@ -91,6 +116,40 @@ python -m pip install "pdf-ocrer[paddle-cpu]"
 
 For contributor setup, tests, style, and native provider guidance, read
 [CONTRIBUTING.md](CONTRIBUTING.md).
+
+## GPU Acceleration (advanced)
+
+GPU acceleration is available for the **RapidOCR** engine and only from a
+source/pip install — the packaged Windows installer is CPU-only. Pick the variant
+that matches your hardware; the two are mutually exclusive (they install different
+`onnxruntime` builds under the same import name):
+
+```powershell
+# NVIDIA GPU (CUDA):
+python -m pip uninstall -y onnxruntime
+python -m pip install -e ".[rapidocr-gpu-cuda]"
+
+# Any DirectX 12 GPU — NVIDIA, AMD, or Intel integrated (DirectML, Windows):
+python -m pip uninstall -y onnxruntime
+python -m pip install -e ".[rapidocr-gpu-dml]"
+```
+
+Then in `config.toml`:
+
+```toml
+[ocr]
+engine = "rapidocr"
+device = "cuda"      # or "dml"
+# model_type = "server"   # larger, more accurate model; worth it mainly on GPU
+#                         # (downloads on first use)
+```
+
+On startup the log states which execution backend is active. If it warns that it
+"will run on CPU instead", the matching GPU `onnxruntime` package is not installed
+correctly — re-check the two commands above. Not sure which to pick? Use
+DirectML: it works on almost any Windows GPU. CUDA is fastest but NVIDIA-only.
+The `device` values `cuda`/`dml` apply to RapidOCR only; the PaddleOCR engine is
+CPU-only here.
 
 ## Usage
 
@@ -423,8 +482,10 @@ in parallel mode to let the app distribute threads automatically.
   v1 inserts an axis-aligned text layer.
 - Password-protected PDFs are skipped and recorded in the CSV.
 - Images without DPI metadata use MuPDF's 96dpi page-size assumption.
-- GPU support is not claimed. The `ocr.device` config field exists, but CPU is
-  the tested path.
+- GPU acceleration (`ocr.device = "cuda"` / `"dml"`) is available for the
+  RapidOCR engine from a source/pip install; the packaged installer is CPU-only,
+  and the PaddleOCR engine is CPU-only here. See
+  [GPU Acceleration](#gpu-acceleration-advanced).
 - PaddlePaddle 3.3.x cannot use the MKLDNN/oneDNN path reliably; use the
   `paddle-cpu` extra's 3.2.x pin before enabling `ocr.enable_mkldnn`.
 

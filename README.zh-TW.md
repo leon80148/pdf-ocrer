@@ -1,5 +1,8 @@
 # pdf-ocrer
 
+[![Release](https://img.shields.io/github/v/release/leon80148/pdf-ocrer?sort=semver)](https://github.com/leon80148/pdf-ocrer/releases/latest)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
 English developer README: [README.md](README.md)
 
 pdf-ocrer 是給診所行政人員使用的批次 OCR 工具。你選一個資料夾，它會把裡面的掃描
@@ -19,19 +22,35 @@ PDF 與支援的圖片檔轉成可搜尋的雙層 PDF：原本的影像保留不
 - 重複執行同一資料夾時，預設會跳過 manifest 已記錄且輸出仍存在的完成檔。
 - 加密 PDF 不會讓整批中斷，會被略過並記錄在 CSV。
 
-## 安裝前準備
+## 下載安裝（Windows，最簡單）
+
+**一般使用者不需要安裝 Python**，下載安裝檔、雙擊安裝就能用：
+
+1. 前往 [**最新版本頁面**](https://github.com/leon80148/pdf-ocrer/releases/latest)。
+2. 下載 `pdf-ocrer-setup-<版本>.exe`。
+3. 執行它，照精靈按「下一步」裝完，之後從**開始功能表**開啟 **pdf-ocrer**。
+
+因為安裝檔沒有做程式碼簽章，第一次執行時 Windows 可能跳出「Windows 已保護您的電腦」，
+點**其他資訊 → 仍要執行**即可（免費開源軟體的正常現象）。
+
+系統需求：Windows 10/11 64 位元，約 350 MB 硬碟空間。安裝檔已內建 RapidOCR 引擎與
+OCR 模型，**完全離線可用**，第一次使用不需要下載模型。若你是開發者、需要 PaddleOCR
+引擎或 GPU 加速，請改用下方的「從原始碼安裝」。
+
+## 安裝前準備（從原始碼安裝才需要）
 
 - Python 3.11 以上，建議 Python 3.12。
 - Windows 建議安裝 Microsoft Visual C++ Redistributable 2019 以上。
-- 第一次執行 OCR 會下載 PP-OCRv6 模型，大約 100 MB，位置是
-  `~/.paddlex/official_models`。
+- 安裝檔版本內建模型、免下載；從原始碼裝 PaddleOCR 時，第一次執行 OCR 會下載
+  PP-OCRv6 模型（約 100 MB）到 `~/.paddlex/official_models`。
 
-如果診所電腦不能上網，可以先在可上網的電腦跑過一次 OCR，再把整個
-`official_models` 資料夾複製到離線電腦的相同位置。
+如果診所電腦不能上網，最省事的方式是直接用上面的**安裝檔**（已內建模型）；若堅持用
+PaddleOCR，可先在可上網的電腦跑過一次，再把整個 `official_models` 資料夾複製到離線
+電腦的相同位置。
 
-## 安裝方式
+## 從原始碼安裝（開發者 / 進階）
 
-目前請從原始碼資料夾安裝：
+一般使用者請用上方的安裝檔。從原始碼安裝：
 
 ```powershell
 git clone https://github.com/leon80148/pdf-ocrer.git
@@ -69,6 +88,35 @@ python -m pip install "pdf-ocrer[paddle-cpu]"
 ```
 
 在那之前，請以上面的原始碼安裝方式為準。
+
+## GPU 加速（進階，選用）
+
+GPU 加速只支援 **RapidOCR** 引擎，而且**只有從原始碼／pip 安裝才有**——打包安裝檔是
+純 CPU 版。依你的顯示卡二選一（兩者互斥，因為它們裝的是同名但不同的 `onnxruntime`）：
+
+```powershell
+# NVIDIA 顯示卡（CUDA）：
+python -m pip uninstall -y onnxruntime
+python -m pip install -e ".[rapidocr-gpu-cuda]"
+
+# 任何 DirectX 12 顯示卡，含 AMD／Intel 內顯（DirectML，Windows 通用）：
+python -m pip uninstall -y onnxruntime
+python -m pip install -e ".[rapidocr-gpu-dml]"
+```
+
+接著在 `config.toml`：
+
+```toml
+[ocr]
+engine = "rapidocr"
+device = "cuda"      # 或 "dml"
+# model_type = "server"   # 更大、更準的模型；建議搭配 GPU 才划算（首次使用會連網下載）
+```
+
+程式啟動時日誌會顯示目前實際使用的執行後端。如果看到「將改以 CPU 執行」的警告，代表
+對應的 GPU 版 onnxruntime 沒有正確安裝，請重新確認上面兩行指令。不確定選哪個？選
+DirectML，幾乎所有 Windows 顯示卡都能用；CUDA 最快但只支援 NVIDIA。`device` 的
+`cuda`/`dml` 僅適用 RapidOCR 引擎，PaddleOCR 在此只支援 CPU。
 
 ## 最簡單的使用方式
 
@@ -370,7 +418,8 @@ rec_model_name = "PP-OCRv6_small_rec"
 - 歪斜文字行仍可搜尋，但 v1 使用水平文字層，反白位置可能略有偏移。
 - 需要密碼的 PDF 會被略過，並記錄在 CSV。
 - 沒有 DPI 標記的圖片會使用 MuPDF 的 96dpi 頁面尺寸假設。
-- `ocr.device` 設定欄位存在，但目前只宣稱 CPU 路徑已測試，不宣稱 GPU 支援。
+- GPU 加速（`ocr.device = "cuda"` / `"dml"`）支援 RapidOCR 引擎，僅限從原始碼／pip
+  安裝；打包安裝檔為純 CPU 版，PaddleOCR 引擎在此也只支援 CPU。詳見「GPU 加速」一節。
 - PaddlePaddle 3.3.x 不能可靠使用 MKLDNN/oneDNN；要開啟 `ocr.enable_mkldnn` 前，
   請使用 `paddle-cpu` extra 釘住的 3.2.x。
 
