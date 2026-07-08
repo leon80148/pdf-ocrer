@@ -242,12 +242,20 @@ def _bundled_resource(name: str) -> Path | None:
     return Path(base) / name if base else None
 
 
+# Minimal fail-safe seed for the frozen app. The packaged build ships only the
+# RapidOCR engine, so if the bundled template can't be copied we must still land
+# on rapidocr — never on the source-level paddle default, which isn't bundled.
+_FROZEN_FALLBACK_CONFIG = '[ocr]\nengine = "rapidocr"\n'
+
+
 def bootstrap_frozen_config(path: Path) -> None:
-    """On a frozen app's first run, seed the per-user config from the bundle.
+    """On a frozen app's first run, seed the per-user config.
 
     No-op when not frozen or when the config already exists (never overwrites a
-    user's customized config). Failures are swallowed: the app still runs on the
-    in-memory defaults if seeding is not possible.
+    user's customized config). When frozen and the config is missing it is always
+    created: from the bundled template if available, otherwise from a minimal
+    rapidocr fallback, so the packaged app never falls back to the unbundled
+    paddle default engine.
     """
     if frozen_data_dir() is None:
         return
@@ -256,13 +264,21 @@ def bootstrap_frozen_config(path: Path) -> None:
         return
 
     source = _bundled_resource("config.installer.toml") or _bundled_resource("config.example.toml")
-    if source is None or not source.exists():
-        return
     try:
         config_path.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(source, config_path)
+        if source is not None and source.exists():
+            shutil.copyfile(source, config_path)
+        else:
+            config_path.write_text(_FROZEN_FALLBACK_CONFIG, encoding="utf-8")
     except OSError:
-        pass
+        # Last resort: still avoid the paddle fallback. Try the minimal seed; if
+        # even that fails there is nothing writable, and load_config will surface
+        # the problem rather than silently selecting an unbundled engine.
+        try:
+            config_path.parent.mkdir(parents=True, exist_ok=True)
+            config_path.write_text(_FROZEN_FALLBACK_CONFIG, encoding="utf-8")
+        except OSError:
+            pass
 
 
 def read_common_settings(path: Path) -> CommonSettings:
@@ -476,6 +492,9 @@ def _validate_ocr(cfg: OcrConfig) -> OcrConfig:
     model_type = cfg.model_type.casefold()
     if model_type not in {"mobile", "tiny", "small", "medium", "server"}:
         raise ConfigError("設定欄位 model_type 必須是 mobile、tiny、small、medium 或 server")
+
+    if device != "cpu" and engine != "rapidocr":
+        raise ConfigError("GPU 裝置（device = cuda/dml）僅適用 rapidocr 引擎；paddle 引擎請用 cpu")
 
     changes: dict[str, str] = {}
     if engine != cfg.engine:

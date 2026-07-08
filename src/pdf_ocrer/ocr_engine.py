@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib.util
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any, Protocol
@@ -23,6 +24,11 @@ class OcrEngineProtocol(Protocol):
 def create_engine(cfg: OcrConfig, log: Callable[[str], None] | None = None) -> OcrEngineProtocol:
     engine = cfg.engine.casefold() if isinstance(cfg.engine, str) else ""
     if engine == "paddle":
+        if not _paddleocr_available():
+            raise ConfigError(
+                "paddle 引擎需要安裝額外套件：pip install pdf-ocrer[paddle-cpu]。"
+                "打包安裝版未包含 paddle，請將 engine 設為 rapidocr。"
+            )
         return PaddleOcrEngine(cfg, log)
     if engine == "rapidocr":
         from pdf_ocrer.rapidocr_engine import RapidOcrEngine
@@ -30,6 +36,10 @@ def create_engine(cfg: OcrConfig, log: Callable[[str], None] | None = None) -> O
         return RapidOcrEngine(cfg, log)
 
     raise ConfigError("設定欄位 engine 必須是 paddle 或 rapidocr")
+
+
+def _paddleocr_available() -> bool:
+    return importlib.util.find_spec("paddleocr") is not None
 
 
 def lines_from_prediction(pred: Mapping[str, Any], min_confidence: float) -> list[OcrLine]:

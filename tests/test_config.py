@@ -335,8 +335,9 @@ def test_ocr_device_and_model_type_defaults():
     [("cpu", "cpu"), ("cuda", "cuda"), ("dml", "dml"), ("CUDA", "cuda"), ("Dml", "dml")],
 )
 def test_ocr_device_loads_and_normalizes(tmp_path, raw, expected):
+    # rapidocr engine so cuda/dml pass the engine/device compatibility check.
     p = tmp_path / "c.toml"
-    p.write_text(f'[ocr]\ndevice = "{raw}"\n', encoding="utf-8")
+    p.write_text(f'[ocr]\nengine = "rapidocr"\ndevice = "{raw}"\n', encoding="utf-8")
 
     assert load_config(p).ocr.device == expected
 
@@ -348,6 +349,23 @@ def test_invalid_ocr_device_raises(tmp_path, bad):
 
     with pytest.raises(ConfigError, match="device.*cpu.*cuda.*dml"):
         load_config(p)
+
+
+@pytest.mark.parametrize("device", ["cuda", "dml"])
+def test_gpu_device_requires_rapidocr_engine(tmp_path, device):
+    p = tmp_path / "c.toml"
+    p.write_text(f'[ocr]\nengine = "paddle"\ndevice = "{device}"\n', encoding="utf-8")
+
+    with pytest.raises(ConfigError, match="rapidocr"):
+        load_config(p)
+
+
+@pytest.mark.parametrize("device", ["cuda", "dml"])
+def test_gpu_device_allowed_with_rapidocr(tmp_path, device):
+    p = tmp_path / "c.toml"
+    p.write_text(f'[ocr]\nengine = "rapidocr"\ndevice = "{device}"\n', encoding="utf-8")
+
+    assert load_config(p).ocr.device == device
 
 
 @pytest.mark.parametrize(
@@ -435,6 +453,48 @@ def test_bootstrap_frozen_config_is_noop_when_not_frozen(monkeypatch, tmp_path):
     config_mod.bootstrap_frozen_config(target)
 
     assert not target.exists()
+
+
+def test_bootstrap_frozen_config_falls_back_to_rapidocr_when_copy_fails(monkeypatch, tmp_path):
+    from pdf_ocrer import config as config_mod
+
+    meipass = tmp_path / "_internal"
+    meipass.mkdir()
+    (meipass / "config.installer.toml").write_text(
+        '[ocr]\nengine = "rapidocr"\n', encoding="utf-8"
+    )
+    target = tmp_path / "appdata" / "pdf_ocrer" / "config.toml"
+
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(sys, "_MEIPASS", str(meipass), raising=False)
+
+    def boom(*_args, **_kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(config_mod.shutil, "copyfile", boom)
+
+    config_mod.bootstrap_frozen_config(target)
+
+    # Must never leave the frozen app to fall back to the paddle default engine,
+    # which the packaged build does not ship.
+    assert target.exists()
+    assert load_config(target).ocr.engine == "rapidocr"
+
+
+def test_bootstrap_frozen_config_writes_rapidocr_when_no_bundle(monkeypatch, tmp_path):
+    from pdf_ocrer import config as config_mod
+
+    meipass = tmp_path / "_internal"
+    meipass.mkdir()  # no config.installer.toml / config.example.toml present
+    target = tmp_path / "appdata" / "pdf_ocrer" / "config.toml"
+
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(sys, "_MEIPASS", str(meipass), raising=False)
+
+    config_mod.bootstrap_frozen_config(target)
+
+    assert target.exists()
+    assert load_config(target).ocr.engine == "rapidocr"
 
 
 def test_bootstrap_frozen_config_does_not_overwrite_existing(monkeypatch, tmp_path):

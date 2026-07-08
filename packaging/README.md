@@ -46,7 +46,7 @@ Output: `packaging/Output/pdf-ocrer-setup-<version>.exe`.
 | `pdf_ocrer.spec` | PyInstaller spec: onedir, GUI (`pdf-ocrer-gui.exe`, windowed) + CLI (`pdf-ocrer.exe`, console) sharing one `_internal/`. Collects rapidocr models (no hook exists), customtkinter/tkinterdnd2 data, and excludes paddle. |
 | `entry_gui.py` | GUI entry wrapper for PyInstaller (the CLI reuses `src/pdf_ocrer/__main__.py`). |
 | `installer.iss` | Inno Setup script. Installs to `Program Files\pdf-ocrer`, Start Menu shortcut with `WorkingDir={app}`. |
-| `config.installer.toml` | First-run config, installed as `{app}\config.toml` with `onlyifdoesntexist uninsneveruninstall` — created on fresh install, **never overwritten on upgrade or removed on uninstall**. Defaults to `engine="rapidocr"` and `naming.enabled=false` (no LLM-timeout trap on a fresh clinic PC). |
+| `config.installer.toml` | Read-only config **seed**, bundled into `_internal\` by the spec. Nothing writable is placed under Program Files. On first run the app copies this seed to a per-user `%APPDATA%\pdf_ocrer\config.toml` (`config.bootstrap_frozen_config`); on upgrade an existing user config is never touched, and uninstall leaves `%APPDATA%` alone. Defaults to `engine="rapidocr"` and `naming.enabled=false` (no LLM-timeout trap on a fresh clinic PC). |
 
 The installer wizard is English (`Default.isl`, bundled with every Inno Setup).
 To localize it, drop an unofficial Traditional-Chinese `.isl` into this directory
