@@ -1,0 +1,53 @@
+name: Release
+
+# Push a version tag (e.g. v0.6.0) to build the Windows installer and publish
+# a GitHub Release with it attached:
+#   git tag v0.6.0 && git push origin v0.6.0
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows-installer:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Run unit tests (release gate)
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install ".[rapidocr,dev]"
+          python -m pytest -q -p no:cacheprovider
+
+      - name: Verify tag matches package version
+        shell: pwsh
+        run: |
+          $tag = "${{ github.ref_name }}" -replace '^v', ''
+          $ver = (python -c "from pdf_ocrer import __version__; print(__version__)").Trim()
+          if ($tag -ne $ver) {
+            throw "Tag $tag does not match pdf_ocrer.__version__ ($ver). Bump src/pdf_ocrer/__init__.py before tagging."
+          }
+          Write-Host "Version check OK: $ver"
+
+      - name: Install Inno Setup
+        run: choco install innosetup --no-progress -y
+
+      - name: Build installer
+        shell: pwsh
+        run: pwsh packaging/build.ps1
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: packaging/Output/pdf-ocrer-setup-*.exe
+          generate_release_notes: true
+          fail_on_unmatched_files: true

@@ -7,6 +7,11 @@ dist/
 .venv/
 venv/
 
+# Packaging build artifacts
+packaging/.venv-build/
+packaging/Output/
+*.spec.bak
+
 # Tooling caches
 .pytest_cache/
 .ruff_cache/
