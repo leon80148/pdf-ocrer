@@ -519,6 +519,25 @@ def test_non_frozen_missing_config_keeps_paddle_default(monkeypatch, tmp_path):
     assert cfg.ocr.engine == "paddle"
 
 
+def test_ensure_config_file_frozen_writes_rapidocr_fallback_not_empty(monkeypatch, tmp_path):
+    from pdf_ocrer.config import ensure_config_file
+
+    empty_bundle = tmp_path / "no_bundle"
+    empty_bundle.mkdir()
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(sys, "_MEIPASS", str(empty_bundle), raising=False)
+    target = tmp_path / "appdata" / "pdf_ocrer" / "config.toml"
+
+    ensure_config_file(target)
+
+    # Must never write an empty config in a frozen build: an empty file would
+    # make load_config skip the frozen fallback and load the paddle default.
+    assert target.read_text(encoding="utf-8").strip() != ""
+    cfg = load_config(target)
+    assert cfg.ocr.engine == "rapidocr"
+    assert cfg.naming.enabled is False
+
+
 def test_bootstrap_frozen_config_does_not_overwrite_existing(monkeypatch, tmp_path):
     from pdf_ocrer import config as config_mod
 

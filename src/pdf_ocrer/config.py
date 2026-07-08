@@ -191,6 +191,20 @@ def ensure_config_file(path: Path) -> None:
     if config_path.exists():
         return
 
+    if frozen_data_dir() is not None:
+        # Frozen build: seed from the bundle, and if that is unavailable fall back
+        # to the rapidocr/naming-disabled seed — never an empty file, which would
+        # make load_config skip the frozen fallback and load the paddle default.
+        bootstrap_frozen_config(config_path)
+        if config_path.exists():
+            return
+        try:
+            config_path.parent.mkdir(parents=True, exist_ok=True)
+            config_path.write_text(_FROZEN_FALLBACK_CONFIG, encoding="utf-8")
+        except OSError:
+            pass
+        return
+
     config_path.parent.mkdir(parents=True, exist_ok=True)
     example_path = Path("config.example.toml")
     if example_path.exists():

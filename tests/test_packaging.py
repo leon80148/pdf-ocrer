@@ -55,3 +55,12 @@ def test_release_workflow_present() -> None:
     text = workflow.read_text(encoding="utf-8")
     assert "build.ps1" in text
     assert "__version__" in text  # tag/version consistency gate
+
+
+def test_frozen_entry_points_call_freeze_support() -> None:
+    # PyInstaller + multiprocessing spawn requires freeze_support() at the very
+    # start of every frozen entry point, or workers>1 recursively relaunches the
+    # app in each child process.
+    for rel in ("packaging/entry_gui.py", "src/pdf_ocrer/__main__.py"):
+        text = (REPO_ROOT / rel).read_text(encoding="utf-8")
+        assert "freeze_support()" in text, f"{rel} must call multiprocessing.freeze_support()"

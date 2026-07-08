@@ -58,7 +58,16 @@ jobs:
           $out = Join-Path $work "OCR輸出"
           if (-not (Test-Path $out)) { throw "frozen CLI produced no output dir" }
           if (-not (Get-ChildItem $out -Filter "*_OCR.pdf")) { throw "frozen CLI produced no searchable PDF" }
-          Write-Host "Frozen CLI offline smoke test passed"
+          # Parallel path: exercises multiprocessing spawn in the frozen build,
+          # which requires freeze_support() in the entry point.
+          $work2 = New-Item -ItemType Directory -Force -Path "$env:TEMP\pdfocr_smoke2"
+          python -c "import sys; sys.path.insert(0, 'tests'); import fixtures_gen; from pathlib import Path; d = Path(r'$work2'); [fixtures_gen.build_scanned(d / f'scan{i}.pdf') for i in range(3)]"
+          Push-Location $work2
+          try { & $exe $work2 --no-llm --workers 2 --force } finally { Pop-Location }
+          if ((Get-ChildItem (Join-Path $work2 "OCR輸出") -Filter "*_OCR.pdf").Count -lt 3) {
+            throw "frozen parallel run did not produce all outputs"
+          }
+          Write-Host "Frozen CLI offline + parallel smoke tests passed"
 
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
