@@ -6,6 +6,22 @@
 > - `dense`：合成診所文件 2 頁（診斷證明+檢驗報告，~33 行/頁，200dpi 掃描式），較接近真實件
 > `ocr_s_med` 排除首頁 warmup。similarity 為正規化後 difflib ratio。
 
+## GPU（DirectML）實機驗證（2026-07-09，dense 2 頁、rapidocr small）
+
+以實際 `RapidOcrEngine`（device 映射走出貨程式碼路徑）在 AMD Radeon 760M 內顯上實測：
+
+| device | 模型 | 冷 init | s/頁 med | 準確度 | 備註 |
+|---|---|---|---|---|---|
+| cpu | small | 3.49s | 0.962 | trad_ok | 基準 |
+| dml | small | 2.91s | 1.005 | trad_ok | RapidOCR log 確認啟用 DirectML |
+
+**結論**：`device="dml"` 的程式碼接線正確（RapidOCR 回報「try to use DirectML as
+primary provider」，準確度不變）；但在**弱內顯 + small 模型**上，DirectML 開銷略大於
+效益（0.96x，等於沒變快）。GPU 加速的實際效益出現在**獨立顯卡**或**較大的 `server`
+模型**（server 首次需連網下載、CPU 上明顯慢，適合搭 GPU）。因此：small 模型維持 CPU
+即可；GPU/server 屬進階選項，程式碼已就緒並經單元測試，實際增益依硬體而定。model_type
+的 PP-OCRv6 世代已於 D1 確認為最新最準，無須更換。
+
 ## 決策 D1（2026-07-08）
 
 **推薦引擎：`rapidocr`（PP-OCRv6 small ONNX，onnxruntime CPU）**：
