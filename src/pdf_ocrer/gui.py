@@ -23,7 +23,17 @@ else:
 from pdf_ocrer import __version__
 from pdf_ocrer.cli import DEFAULT_NAMING_PROMPT, _load_prompt
 from pdf_ocrer.app_logging import setup_logging
-from pdf_ocrer.config import ConfigError, GuiConfig, LlmConfig, LoggingConfig, OcrConfig, load_config
+from pdf_ocrer.config import (
+    ConfigError,
+    GuiConfig,
+    LlmConfig,
+    LoggingConfig,
+    OcrConfig,
+    bootstrap_frozen_config,
+    default_config_path,
+    load_config,
+    resolve_prompt_path,
+)
 from pdf_ocrer.llm_providers import LLMClient, create_client
 from pdf_ocrer.ocr_engine import OcrEngineProtocol, create_engine
 from pdf_ocrer.pipeline import BatchSummary, FileResult, FileStatus, run_batch
@@ -164,7 +174,10 @@ class App(_AppBase):
         client_factory: ClientFactory | None = None,
     ) -> None:
         super().__init__()
-        self._config_path = Path("config.toml") if config_path is None else Path(config_path)
+        self._config_path = (
+            default_config_path() if config_path is None else Path(config_path)
+        )
+        bootstrap_frozen_config(self._config_path)
         self._engine_factory = engine_factory
         self._client_factory = client_factory
         self._queue: queue.Queue[GuiEvent] = queue.Queue()
@@ -408,7 +421,9 @@ class App(_AppBase):
             force = False if watch else force
             if watch and not cfg.output.incremental:
                 raise ConfigError("監看模式需要增量處理（[output] incremental = true）")
-            prompt_template = _load_prompt(Path(cfg.naming.prompt_file))
+            prompt_template = _load_prompt(
+                resolve_prompt_path(cfg.naming.prompt_file, self._config_path)
+            )
             engine = self._create_engine(cfg.ocr, log_cb)
             client = None
             if cfg.naming.enabled:
@@ -680,8 +695,9 @@ class App(_AppBase):
             messagebox.showerror("設定錯誤", str(exc), parent=self)
             return
 
-        prompt_path = Path(cfg.naming.prompt_file)
+        prompt_path = resolve_prompt_path(cfg.naming.prompt_file, self._config_path)
         if not prompt_path.exists():
+            prompt_path.parent.mkdir(parents=True, exist_ok=True)
             prompt_path.write_text(DEFAULT_NAMING_PROMPT, encoding="utf-8")
         self._open_path(prompt_path)
 

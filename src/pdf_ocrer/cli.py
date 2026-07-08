@@ -10,7 +10,17 @@ from pathlib import Path
 
 from pdf_ocrer import __version__
 from pdf_ocrer.app_logging import setup_logging
-from pdf_ocrer.config import AppConfig, ConfigError, LlmConfig, LoggingConfig, OcrConfig, load_config
+from pdf_ocrer.config import (
+    AppConfig,
+    ConfigError,
+    LlmConfig,
+    LoggingConfig,
+    OcrConfig,
+    bootstrap_frozen_config,
+    default_config_path,
+    load_config,
+    resolve_prompt_path,
+)
 from pdf_ocrer.llm_providers import LLMClient, create_client
 from pdf_ocrer.ocr_engine import OcrEngineProtocol, create_engine
 from pdf_ocrer.pipeline import BatchSummary, FileResult, FileStatus, run_batch
@@ -65,7 +75,9 @@ def main(
         return 2
 
     try:
-        cfg = load_config(args.config)
+        config_path = args.config if args.config is not None else default_config_path()
+        bootstrap_frozen_config(config_path)
+        cfg = load_config(config_path)
         setup_logging(cfg.logging)
         if args.no_llm:
             cfg = replace(cfg, llm=replace(cfg.llm, provider="none"))
@@ -81,7 +93,7 @@ def main(
             print("監看模式需要增量處理（[output] incremental = true）", file=sys.stderr)
             return 2
 
-        prompt_template = _load_prompt(Path(cfg.naming.prompt_file))
+        prompt_template = _load_prompt(resolve_prompt_path(cfg.naming.prompt_file, config_path))
         log_cb = print
         engine = (
             engine_factory(cfg.ocr)

@@ -78,6 +78,15 @@ def test_create_engine_rejects_unknown_engine_defensively() -> None:
         create_engine(replace(OcrConfig(), engine="unknown"))
 
 
+def test_create_engine_paddle_missing_dependency_raises_config_error(monkeypatch) -> None:
+    import pdf_ocrer.ocr_engine as ocr_engine
+
+    monkeypatch.setattr(ocr_engine, "_paddleocr_available", lambda: False)
+
+    with pytest.raises(ConfigError, match=r"paddle-cpu|rapidocr"):
+        create_engine(replace(OcrConfig(), engine="paddle"))
+
+
 def test_paddle_engine_lazy_init_and_predict_kwargs(monkeypatch) -> None:
     init_kwargs: dict[str, object] = {}
     predict_kwargs: list[dict[str, object]] = []

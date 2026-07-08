@@ -1,7 +1,9 @@
 from __future__ import annotations
 
-from dataclasses import replace
+import sys
 import warnings
+from dataclasses import replace
+from pathlib import Path
 
 import pytest
 
@@ -30,6 +32,8 @@ def _common_settings(**overrides: object) -> CommonSettings:
         "engine": "rapidocr",
         "dpi": 300,
         "min_confidence": 0.75,
+        "device": "cpu",
+        "model_type": "small",
         "det_model_name": "PP-OCRv6_mobile_det",
         "rec_model_name": "PP-OCRv6_mobile_rec",
         "workers": 3,
@@ -41,6 +45,25 @@ def _common_settings(**overrides: object) -> CommonSettings:
     }
     values.update(overrides)
     return CommonSettings(**values)
+
+
+def test_common_settings_roundtrip_device_and_model_type(tmp_path):
+    config_path = tmp_path / "config.toml"
+    settings = _common_settings(device="dml", model_type="server")
+
+    apply_common_settings(config_path, settings)
+
+    assert read_common_settings(config_path) == settings
+    cfg = load_config(config_path)
+    assert cfg.ocr.device == "dml"
+    assert cfg.ocr.model_type == "server"
+
+
+def test_apply_common_settings_rejects_invalid_device(tmp_path):
+    config_path = tmp_path / "config.toml"
+
+    with pytest.raises(ConfigError, match="device"):
+        apply_common_settings(config_path, _common_settings(device="gpu"))
 
 
 def test_defaults_when_no_file(tmp_path):
@@ -298,6 +321,240 @@ def test_invalid_cpu_threads_range_raises(tmp_path, cpu_threads):
 
     with pytest.raises(ConfigError, match="cpu_threads"):
         load_config(p)
+
+
+def test_ocr_device_and_model_type_defaults():
+    cfg = OcrConfig()
+
+    assert cfg.device == "cpu"
+    assert cfg.model_type == "small"
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [("cpu", "cpu"), ("cuda", "cuda"), ("dml", "dml"), ("CUDA", "cuda"), ("Dml", "dml")],
+)
+def test_ocr_device_loads_and_normalizes(tmp_path, raw, expected):
+    # rapidocr engine so cuda/dml pass the engine/device compatibility check.
+    p = tmp_path / "c.toml"
+    p.write_text(f'[ocr]\nengine = "rapidocr"\ndevice = "{raw}"\n', encoding="utf-8")
+
+    assert load_config(p).ocr.device == expected
+
+
+@pytest.mark.parametrize("bad", ["gpu", "npu", "gpu:0", "gpU"])
+def test_invalid_ocr_device_raises(tmp_path, bad):
+    p = tmp_path / "c.toml"
+    p.write_text(f'[ocr]\ndevice = "{bad}"\n', encoding="utf-8")
+
+    with pytest.raises(ConfigError, match="device.*cpu.*cuda.*dml"):
+        load_config(p)
+
+
+@pytest.mark.parametrize("device", ["cuda", "dml"])
+def test_gpu_device_requires_rapidocr_engine(tmp_path, device):
+    p = tmp_path / "c.toml"
+    p.write_text(f'[ocr]\nengine = "paddle"\ndevice = "{device}"\n', encoding="utf-8")
+
+    with pytest.raises(ConfigError, match="rapidocr"):
+        load_config(p)
+
+
+@pytest.mark.parametrize("device", ["cuda", "dml"])
+def test_gpu_device_allowed_with_rapidocr(tmp_path, device):
+    p = tmp_path / "c.toml"
+    p.write_text(f'[ocr]\nengine = "rapidocr"\ndevice = "{device}"\n', encoding="utf-8")
+
+    assert load_config(p).ocr.device == device
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [("small", "small"), ("server", "server"), ("SERVER", "server"), ("Medium", "medium")],
+)
+def test_ocr_model_type_loads_and_normalizes(tmp_path, raw, expected):
+    p = tmp_path / "c.toml"
+    p.write_text(f'[ocr]\nmodel_type = "{raw}"\n', encoding="utf-8")
+
+    assert load_config(p).ocr.model_type == expected
+
+
+@pytest.mark.parametrize("bad", ["large", "huge", "v6", ""])
+def test_invalid_ocr_model_type_raises(tmp_path, bad):
+    p = tmp_path / "c.toml"
+    p.write_text(f'[ocr]\nmodel_type = "{bad}"\n', encoding="utf-8")
+
+    with pytest.raises(ConfigError, match="model_type"):
+        load_config(p)
+
+
+def test_old_config_loads_device_and_model_type_defaults(tmp_path):
+    p = tmp_path / "c.toml"
+    p.write_text("[ocr]\nengine = \"rapidocr\"\n", encoding="utf-8")
+
+    cfg = load_config(p)
+
+    assert cfg.ocr.device == "cpu"
+    assert cfg.ocr.model_type == "small"
+
+
+def test_default_config_path_is_cwd_relative_when_not_frozen(monkeypatch):
+    from pdf_ocrer.config import default_config_path
+
+    monkeypatch.delattr(sys, "frozen", raising=False)
+
+    assert default_config_path() == Path("config.toml")
+
+
+def test_default_config_path_is_per_user_when_frozen(monkeypatch, tmp_path):
+    from pdf_ocrer.config import default_config_path
+
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setenv("APPDATA", str(tmp_path))
+
+    assert default_config_path() == tmp_path / "pdf_ocrer" / "config.toml"
+
+
+def test_resolve_prompt_path_relative_to_config_dir():
+    from pdf_ocrer.config import resolve_prompt_path
+
+    assert resolve_prompt_path("naming_prompt.txt", Path("/data/pdf_ocrer/config.toml")) == Path(
+        "/data/pdf_ocrer/naming_prompt.txt"
+    )
+    absolute = Path("/etc/custom_prompt.txt")
+    assert resolve_prompt_path(str(absolute), Path("/data/config.toml")) == absolute
+
+
+def test_bootstrap_frozen_config_seeds_from_bundle(monkeypatch, tmp_path):
+    from pdf_ocrer import config as config_mod
+
+    meipass = tmp_path / "_internal"
+    meipass.mkdir()
+    (meipass / "config.installer.toml").write_text(
+        '[ocr]\nengine = "rapidocr"\n', encoding="utf-8"
+    )
+    target = tmp_path / "appdata" / "pdf_ocrer" / "config.toml"
+
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(sys, "_MEIPASS", str(meipass), raising=False)
+
+    config_mod.bootstrap_frozen_config(target)
+
+    assert target.exists()
+    assert load_config(target).ocr.engine == "rapidocr"
+
+
+def test_bootstrap_frozen_config_is_noop_when_not_frozen(monkeypatch, tmp_path):
+    from pdf_ocrer import config as config_mod
+
+    monkeypatch.delattr(sys, "frozen", raising=False)
+    target = tmp_path / "config.toml"
+
+    config_mod.bootstrap_frozen_config(target)
+
+    assert not target.exists()
+
+
+def test_bootstrap_frozen_config_falls_back_to_rapidocr_when_copy_fails(monkeypatch, tmp_path):
+    from pdf_ocrer import config as config_mod
+
+    meipass = tmp_path / "_internal"
+    meipass.mkdir()
+    (meipass / "config.installer.toml").write_text(
+        '[ocr]\nengine = "rapidocr"\n', encoding="utf-8"
+    )
+    target = tmp_path / "appdata" / "pdf_ocrer" / "config.toml"
+
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(sys, "_MEIPASS", str(meipass), raising=False)
+
+    def boom(*_args, **_kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(config_mod.shutil, "copyfile", boom)
+
+    config_mod.bootstrap_frozen_config(target)
+
+    # Must never leave the frozen app to fall back to the paddle default engine,
+    # which the packaged build does not ship.
+    assert target.exists()
+    assert load_config(target).ocr.engine == "rapidocr"
+
+
+def test_bootstrap_frozen_config_writes_rapidocr_when_no_bundle(monkeypatch, tmp_path):
+    from pdf_ocrer import config as config_mod
+
+    meipass = tmp_path / "_internal"
+    meipass.mkdir()  # no config.installer.toml / config.example.toml present
+    target = tmp_path / "appdata" / "pdf_ocrer" / "config.toml"
+
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(sys, "_MEIPASS", str(meipass), raising=False)
+
+    config_mod.bootstrap_frozen_config(target)
+
+    assert target.exists()
+    cfg = load_config(target)
+    assert cfg.ocr.engine == "rapidocr"
+    # Fallback seed must mirror the installer's fresh-install contract.
+    assert cfg.naming.enabled is False
+
+
+def test_frozen_missing_config_defaults_to_rapidocr_not_paddle(monkeypatch, tmp_path):
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+
+    # Even if bootstrap never ran / could not write anything, a frozen build must
+    # never load the source paddle default (paddle is not bundled).
+    cfg = load_config(tmp_path / "does_not_exist.toml")
+
+    assert cfg.ocr.engine == "rapidocr"
+    assert cfg.naming.enabled is False
+
+
+def test_non_frozen_missing_config_keeps_paddle_default(monkeypatch, tmp_path):
+    monkeypatch.delattr(sys, "frozen", raising=False)
+
+    cfg = load_config(tmp_path / "does_not_exist.toml")
+
+    assert cfg.ocr.engine == "paddle"
+
+
+def test_ensure_config_file_frozen_writes_rapidocr_fallback_not_empty(monkeypatch, tmp_path):
+    from pdf_ocrer.config import ensure_config_file
+
+    empty_bundle = tmp_path / "no_bundle"
+    empty_bundle.mkdir()
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(sys, "_MEIPASS", str(empty_bundle), raising=False)
+    target = tmp_path / "appdata" / "pdf_ocrer" / "config.toml"
+
+    ensure_config_file(target)
+
+    # Must never write an empty config in a frozen build: an empty file would
+    # make load_config skip the frozen fallback and load the paddle default.
+    assert target.read_text(encoding="utf-8").strip() != ""
+    cfg = load_config(target)
+    assert cfg.ocr.engine == "rapidocr"
+    assert cfg.naming.enabled is False
+
+
+def test_bootstrap_frozen_config_does_not_overwrite_existing(monkeypatch, tmp_path):
+    from pdf_ocrer import config as config_mod
+
+    meipass = tmp_path / "_internal"
+    meipass.mkdir()
+    (meipass / "config.installer.toml").write_text(
+        '[ocr]\nengine = "rapidocr"\n', encoding="utf-8"
+    )
+    target = tmp_path / "config.toml"
+    target.write_text('[ocr]\ndpi = 250\n', encoding="utf-8")
+
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(sys, "_MEIPASS", str(meipass), raising=False)
+
+    config_mod.bootstrap_frozen_config(target)
+
+    assert load_config(target).ocr.dpi == 250  # existing user config preserved
 
 
 def test_gui_appearance_loads(tmp_path):

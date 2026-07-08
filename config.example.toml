@@ -12,7 +12,9 @@ min_confidence = 0.5
 skip_pages_with_text = true
 # 判定已有文字層所需的最少字元數。預設：30。
 min_existing_chars = 30
-# OCR 執行裝置。預設：cpu。
+# OCR 執行裝置："cpu"（預設）、"cuda"（NVIDIA GPU）或 "dml"（DirectML，Windows 通用 GPU）。
+# 註：cuda/dml 僅適用 rapidocr 引擎，且需另外安裝對應套件（見 model_type 下方說明）；
+# paddle 引擎只支援 cpu。
 device = "cpu"
 # oneDNN 加速。paddlepaddle 3.2.x 可設 true（medium 快 ~7x）；3.3.x 有 bug 必須 false（詳 docs/specs/paddleocr-api-facts.md §2）
 enable_mkldnn = false
@@ -28,6 +30,14 @@ engine = "paddle"
 cpu_threads = 0
 # 文字行方向偵測（處理上下顛倒的行）。預設 true
 textline_orientation = true
+# rapidocr 模型尺寸："small"（預設，內建、免下載、CPU 快）、mobile/tiny/medium，或 "server"
+# （最準但較大，首次使用需連網下載，建議搭配 GPU）。僅適用 rapidocr 引擎。
+model_type = "small"
+# GPU 加速（進階，僅原始碼/pip 安裝，打包安裝檔為純 CPU）：
+#   NVIDIA 顯卡：pip install "pdf-ocrer[rapidocr-gpu-cuda]"，並設 device = "cuda"
+#   其他 GPU（AMD/Intel 內顯等）：pip install "pdf-ocrer[rapidocr-gpu-dml]"，並設 device = "dml"
+#   安裝 GPU 版前請先移除已安裝的 CPU 版 onnxruntime，避免套件衝突。
+#   啟動時若日誌出現「將改以 CPU 執行」的警告，代表 GPU 套件未正確安裝。
 
 [output]
 # 輸出子資料夾名稱。預設：OCR輸出。

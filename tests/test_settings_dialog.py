@@ -159,6 +159,37 @@ def test_valid_save_updates_config_and_closes_dialog(root, tmp_path: Path) -> No
     assert cfg.llm.api_key == "sk-saved"
 
 
+def test_dialog_saves_rapidocr_device_and_model_type(root, tmp_path: Path) -> None:
+    config_path = tmp_path / "config.toml"
+    _write_config(config_path, naming_enabled=False)
+    dialog = _make_dialog(root, config_path)
+
+    dialog.engine_var.set("rapidocr")
+    dialog.device_var.set("dml")
+    dialog.model_type_var.set("server")
+
+    dialog._on_save()
+
+    cfg = load_config(config_path)
+    assert cfg.ocr.device == "dml"
+    assert cfg.ocr.model_type == "server"
+
+
+def test_dialog_preselects_device_and_model_type(root, tmp_path: Path) -> None:
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        '[ocr]\nengine = "rapidocr"\ndevice = "cuda"\nmodel_type = "medium"\n',
+        encoding="utf-8",
+    )
+    dialog = _make_dialog(root, config_path)
+
+    try:
+        assert dialog.device_var.get() == "cuda"
+        assert dialog.model_type_var.get() == "medium"
+    finally:
+        _destroy_if_exists(dialog)
+
+
 def test_cancel_closes_dialog_without_writing(root, tmp_path: Path) -> None:
     config_path = tmp_path / "config.toml"
     _write_config(config_path, dpi=200)

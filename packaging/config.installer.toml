@@ -1,0 +1,51 @@
+# pdf_ocrer 設定檔（安裝版）
+#
+# 這個檔案由安裝程式在第一次安裝時建立。你可以直接編輯它來調整行為，
+# 或在程式的「編輯設定」視窗中修改。重新安裝（升級）時不會覆蓋這個檔案。
+# 未列出的進階選項會使用內建預設值；完整選項請見專案的 config.example.toml。
+
+[ocr]
+# OCR 引擎。安裝版內建 "rapidocr"（免額外下載模型、速度快），請勿改成 "paddle"
+# （安裝版未包含 paddle 引擎）。
+engine = "rapidocr"
+# 掃描解析度。預設 200；數字越大越清晰但越慢，範圍 72–600。
+dpi = 200
+# OCR 最低信心分數，低於此值的文字會被忽略。預設 0.5，範圍 0–1。
+min_confidence = 0.5
+# 已含文字層的 PDF 頁面是否略過 OCR（只會被重新命名）。預設 true。
+skip_pages_with_text = true
+
+[output]
+# 輸出資料夾名稱（建立在來源資料夾底下）。
+subdir_name = "OCR輸出"
+# 是否連同 PDF 一起輸出純文字 .txt。預設 false。
+export_txt = false
+# 增量處理：重跑同一個資料夾時，自動跳過先前已完成的檔案。預設 true。
+incremental = true
+
+[input]
+# 是否掃描子資料夾（輸出會鏡像原本的資料夾結構）。預設 false。
+recursive = false
+# 可辨識的圖片檔類型；設為 [] 可只處理 PDF。
+image_extensions = ["jpg", "jpeg", "png", "tif", "tiff"]
+
+[naming]
+# 是否用 AI（大型語言模型）自動命名輸出檔。
+# 預設關閉：需要另外架設本機或雲端的 LLM 服務才會有效果，未設定時開啟會讓每個檔案
+# 等待逾時、拖慢處理。設定好 LLM 端點後（見下方 [llm]）再改成 true。
+enabled = false
+
+[llm]
+# AI 命名要連線的 OpenAI 相容服務。預設指向本機 Ollama。
+# 常見選項：
+#   本機 Ollama： http://localhost:11434/v1
+#   OpenAI：      https://api.openai.com/v1
+base_url = "http://localhost:11434/v1"
+# 模型名稱（依你使用的服務而定）。
+model = "qwen3:8b"
+# API 金鑰；留空會改讀環境變數 PDF_OCRER_API_KEY。
+api_key = ""
+
+[gui]
+# 介面外觀："system"（跟隨系統）、"light" 或 "dark"。
+appearance = "system"

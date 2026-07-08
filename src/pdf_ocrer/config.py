@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import sys
 import tomllib
 import warnings
 from collections.abc import MutableMapping
@@ -28,6 +29,7 @@ class OcrConfig:
     engine: str = "paddle"
     cpu_threads: int = 0
     textline_orientation: bool = True
+    model_type: str = "small"
 
 
 @dataclass(frozen=True)
@@ -117,6 +119,8 @@ class CommonSettings:
     engine: str = "paddle"
     dpi: int = 200
     min_confidence: float = 0.5
+    device: str = "cpu"
+    model_type: str = "small"
     det_model_name: str | None = None
     rec_model_name: str | None = None
     workers: int = 1
@@ -133,6 +137,8 @@ _T = TypeVar("_T")
 def load_config(path: Path | None = None) -> AppConfig:
     config_path = Path("config.toml") if path is None else path
     if not config_path.exists():
+        if getattr(sys, "frozen", False):
+            return _validate(_frozen_default_config())
         return _validate(AppConfig(OcrConfig(), OutputConfig(), NamingConfig(), LlmConfig(), DebugConfig()))
 
     try:
@@ -185,6 +191,20 @@ def ensure_config_file(path: Path) -> None:
     if config_path.exists():
         return
 
+    if frozen_data_dir() is not None:
+        # Frozen build: seed from the bundle, and if that is unavailable fall back
+        # to the rapidocr/naming-disabled seed — never an empty file, which would
+        # make load_config skip the frozen fallback and load the paddle default.
+        bootstrap_frozen_config(config_path)
+        if config_path.exists():
+            return
+        try:
+            config_path.parent.mkdir(parents=True, exist_ok=True)
+            config_path.write_text(_FROZEN_FALLBACK_CONFIG, encoding="utf-8")
+        except OSError:
+            pass
+        return
+
     config_path.parent.mkdir(parents=True, exist_ok=True)
     example_path = Path("config.example.toml")
     if example_path.exists():
@@ -194,12 +214,115 @@ def ensure_config_file(path: Path) -> None:
     config_path.write_text("", encoding="utf-8")
 
 
+def frozen_data_dir() -> Path | None:
+    """User-writable app-data dir when running as a frozen (packaged) app, else None.
+
+    A packaged install lives under Program Files, which is not user-writable and
+    whose location is independent of the process working directory. Keeping the
+    config there would break settings saves for non-admin users and would make a
+    launch from any folder other than the install dir miss the config entirely.
+    So the frozen app keeps its config under %APPDATA%\\pdf_ocrer instead.
+    """
+    if not getattr(sys, "frozen", False):
+        return None
+    appdata = os.environ.get("APPDATA")
+    if appdata:
+        return Path(appdata) / "pdf_ocrer"
+    return Path.home() / ".pdf_ocrer"
+
+
+def default_config_path() -> Path:
+    """Where the CLI/GUI look for config.toml when no explicit path is given.
+
+    Frozen app: per-user %APPDATA%\\pdf_ocrer\\config.toml. Source/dev: config.toml
+    relative to the working directory (unchanged behavior).
+    """
+    data_dir = frozen_data_dir()
+    return (data_dir / "config.toml") if data_dir is not None else Path("config.toml")
+
+
+def resolve_prompt_path(prompt_file: str, config_path: Path) -> Path:
+    """Resolve a (possibly relative) naming-prompt path against the config's dir.
+
+    Keeps the prompt file next to config.toml, so the frozen app writes it to the
+    user-writable %APPDATA% dir instead of Program Files. Absolute paths are used
+    as-is. In source mode config_path is ``config.toml`` (cwd), preserving the
+    previous cwd-relative behavior.
+    """
+    prompt = Path(prompt_file)
+    return prompt if prompt.is_absolute() else Path(config_path).parent / prompt
+
+
+def _bundled_resource(name: str) -> Path | None:
+    base = getattr(sys, "_MEIPASS", None)
+    return Path(base) / name if base else None
+
+
+# Minimal fail-safe seed for the frozen app. The packaged build ships only the
+# RapidOCR engine, so if the bundled template can't be copied we must still land
+# on rapidocr — never on the source-level paddle default, which isn't bundled.
+# Mirrors the installer's fresh-install contract: rapidocr + LLM naming off (no
+# Ollama-timeout trap on a machine with no LLM configured).
+_FROZEN_FALLBACK_CONFIG = '[ocr]\nengine = "rapidocr"\n\n[naming]\nenabled = false\n'
+
+
+def _frozen_default_config() -> AppConfig:
+    """In-memory default a frozen build uses when no config file is present.
+
+    The frozen build ships only RapidOCR, so its default must be rapidocr (never
+    the source-level paddle default) with LLM naming off — matching the installer
+    seed. This is the last-resort safety net if even writing the seed failed.
+    """
+    return AppConfig(
+        OcrConfig(engine="rapidocr"),
+        OutputConfig(),
+        replace(NamingConfig(), enabled=False),
+        LlmConfig(),
+        DebugConfig(),
+    )
+
+
+def bootstrap_frozen_config(path: Path) -> None:
+    """On a frozen app's first run, seed the per-user config.
+
+    No-op when not frozen or when the config already exists (never overwrites a
+    user's customized config). When frozen and the config is missing it is always
+    created: from the bundled template if available, otherwise from a minimal
+    rapidocr fallback, so the packaged app never falls back to the unbundled
+    paddle default engine.
+    """
+    if frozen_data_dir() is None:
+        return
+    config_path = Path(path)
+    if config_path.exists():
+        return
+
+    source = _bundled_resource("config.installer.toml") or _bundled_resource("config.example.toml")
+    try:
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        if source is not None and source.exists():
+            shutil.copyfile(source, config_path)
+        else:
+            config_path.write_text(_FROZEN_FALLBACK_CONFIG, encoding="utf-8")
+    except OSError:
+        # Last resort: still avoid the paddle fallback. Try the minimal seed; if
+        # even that fails there is nothing writable, and load_config will surface
+        # the problem rather than silently selecting an unbundled engine.
+        try:
+            config_path.parent.mkdir(parents=True, exist_ok=True)
+            config_path.write_text(_FROZEN_FALLBACK_CONFIG, encoding="utf-8")
+        except OSError:
+            pass
+
+
 def read_common_settings(path: Path) -> CommonSettings:
     cfg = load_config(path)
     return CommonSettings(
         engine=cfg.ocr.engine,
         dpi=cfg.ocr.dpi,
         min_confidence=cfg.ocr.min_confidence,
+        device=cfg.ocr.device,
+        model_type=cfg.ocr.model_type,
         det_model_name=cfg.ocr.det_model_name,
         rec_model_name=cfg.ocr.rec_model_name,
         workers=cfg.performance.workers,
@@ -233,6 +356,8 @@ def apply_common_settings(path: Path, settings: CommonSettings) -> None:
     ocr_table["engine"] = settings.engine
     ocr_table["dpi"] = settings.dpi
     ocr_table["min_confidence"] = settings.min_confidence
+    ocr_table["device"] = settings.device
+    ocr_table["model_type"] = settings.model_type
     _set_optional_toml_value(ocr_table, "det_model_name", settings.det_model_name)
     _set_optional_toml_value(ocr_table, "rec_model_name", settings.rec_model_name)
     performance_table["workers"] = settings.workers
@@ -257,6 +382,8 @@ def _validate_common_settings(
         engine=settings.engine,
         dpi=settings.dpi,
         min_confidence=settings.min_confidence,
+        device=settings.device,
+        model_type=settings.model_type,
         det_model_name=settings.det_model_name,
         rec_model_name=settings.rec_model_name,
     )
@@ -388,7 +515,29 @@ def _validate_ocr(cfg: OcrConfig) -> OcrConfig:
 
     _require_bool("textline_orientation", cfg.textline_orientation)
 
-    return cfg if engine == cfg.engine else replace(cfg, engine=engine)
+    if not isinstance(cfg.device, str):
+        raise ConfigError("設定欄位 device 必須是 cpu、cuda 或 dml")
+    device = cfg.device.casefold()
+    if device not in {"cpu", "cuda", "dml"}:
+        raise ConfigError("設定欄位 device 必須是 cpu、cuda 或 dml")
+
+    if not isinstance(cfg.model_type, str):
+        raise ConfigError("設定欄位 model_type 必須是 mobile、tiny、small、medium 或 server")
+    model_type = cfg.model_type.casefold()
+    if model_type not in {"mobile", "tiny", "small", "medium", "server"}:
+        raise ConfigError("設定欄位 model_type 必須是 mobile、tiny、small、medium 或 server")
+
+    if device != "cpu" and engine != "rapidocr":
+        raise ConfigError("GPU 裝置（device = cuda/dml）僅適用 rapidocr 引擎；paddle 引擎請用 cpu")
+
+    changes: dict[str, str] = {}
+    if engine != cfg.engine:
+        changes["engine"] = engine
+    if device != cfg.device:
+        changes["device"] = device
+    if model_type != cfg.model_type:
+        changes["model_type"] = model_type
+    return replace(cfg, **changes) if changes else cfg
 
 
 def _validate_output(cfg: OutputConfig) -> OutputConfig:
