@@ -494,7 +494,29 @@ def test_bootstrap_frozen_config_writes_rapidocr_when_no_bundle(monkeypatch, tmp
     config_mod.bootstrap_frozen_config(target)
 
     assert target.exists()
-    assert load_config(target).ocr.engine == "rapidocr"
+    cfg = load_config(target)
+    assert cfg.ocr.engine == "rapidocr"
+    # Fallback seed must mirror the installer's fresh-install contract.
+    assert cfg.naming.enabled is False
+
+
+def test_frozen_missing_config_defaults_to_rapidocr_not_paddle(monkeypatch, tmp_path):
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+
+    # Even if bootstrap never ran / could not write anything, a frozen build must
+    # never load the source paddle default (paddle is not bundled).
+    cfg = load_config(tmp_path / "does_not_exist.toml")
+
+    assert cfg.ocr.engine == "rapidocr"
+    assert cfg.naming.enabled is False
+
+
+def test_non_frozen_missing_config_keeps_paddle_default(monkeypatch, tmp_path):
+    monkeypatch.delattr(sys, "frozen", raising=False)
+
+    cfg = load_config(tmp_path / "does_not_exist.toml")
+
+    assert cfg.ocr.engine == "paddle"
 
 
 def test_bootstrap_frozen_config_does_not_overwrite_existing(monkeypatch, tmp_path):

@@ -137,6 +137,8 @@ _T = TypeVar("_T")
 def load_config(path: Path | None = None) -> AppConfig:
     config_path = Path("config.toml") if path is None else path
     if not config_path.exists():
+        if getattr(sys, "frozen", False):
+            return _validate(_frozen_default_config())
         return _validate(AppConfig(OcrConfig(), OutputConfig(), NamingConfig(), LlmConfig(), DebugConfig()))
 
     try:
@@ -245,7 +247,25 @@ def _bundled_resource(name: str) -> Path | None:
 # Minimal fail-safe seed for the frozen app. The packaged build ships only the
 # RapidOCR engine, so if the bundled template can't be copied we must still land
 # on rapidocr — never on the source-level paddle default, which isn't bundled.
-_FROZEN_FALLBACK_CONFIG = '[ocr]\nengine = "rapidocr"\n'
+# Mirrors the installer's fresh-install contract: rapidocr + LLM naming off (no
+# Ollama-timeout trap on a machine with no LLM configured).
+_FROZEN_FALLBACK_CONFIG = '[ocr]\nengine = "rapidocr"\n\n[naming]\nenabled = false\n'
+
+
+def _frozen_default_config() -> AppConfig:
+    """In-memory default a frozen build uses when no config file is present.
+
+    The frozen build ships only RapidOCR, so its default must be rapidocr (never
+    the source-level paddle default) with LLM naming off — matching the installer
+    seed. This is the last-resort safety net if even writing the seed failed.
+    """
+    return AppConfig(
+        OcrConfig(engine="rapidocr"),
+        OutputConfig(),
+        replace(NamingConfig(), enabled=False),
+        LlmConfig(),
+        DebugConfig(),
+    )
 
 
 def bootstrap_frozen_config(path: Path) -> None:
