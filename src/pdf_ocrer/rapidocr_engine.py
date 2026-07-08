@@ -60,6 +60,7 @@ class RapidOcrEngine:
 
             from rapidocr import RapidOCR
 
+            self._log_device_status()
             params = _rapidocr_params(self._cfg)
             if params:
                 self._ocr = RapidOCR(params=params)
@@ -67,6 +68,20 @@ class RapidOcrEngine:
                 self._ocr = RapidOCR()
 
         return self._ocr
+
+    def _log_device_status(self) -> None:
+        if self._log is None or self._cfg.device.casefold() == "cpu":
+            return
+
+        import onnxruntime
+
+        message = _device_status_message(self._cfg.device, onnxruntime.get_available_providers())
+        if message is not None:
+            self._log(message)
+
+
+_PROVIDER_FOR_DEVICE = {"cuda": "CUDAExecutionProvider", "dml": "DmlExecutionProvider"}
+_EXTRA_FOR_DEVICE = {"cuda": "pdf-ocrer[rapidocr-gpu-cuda]", "dml": "pdf-ocrer[rapidocr-gpu-dml]"}
 
 
 def _rapidocr_params(cfg: OcrConfig) -> dict[str, object]:
@@ -78,7 +93,33 @@ def _rapidocr_params(cfg: OcrConfig) -> dict[str, object]:
     if not cfg.textline_orientation:
         params["Global.use_cls"] = cfg.textline_orientation
 
+    device = cfg.device.casefold()
+    if device == "cuda":
+        params["EngineConfig.onnxruntime.use_cuda"] = True
+    elif device == "dml":
+        params["EngineConfig.onnxruntime.use_dml"] = True
+
+    if cfg.model_type != "small":
+        params["Det.model_type"] = cfg.model_type
+        params["Rec.model_type"] = cfg.model_type
+
     return params
+
+
+def _device_status_message(device: str, available_providers: list[str]) -> str | None:
+    device = device.casefold()
+    provider = _PROVIDER_FOR_DEVICE.get(device)
+    if provider is None:
+        return None
+
+    if provider in available_providers:
+        return f"OCR 使用 GPU 加速（{provider}）"
+
+    return (
+        f"警告：已設定 device={device}，但目前安裝的 onnxruntime 不支援 {provider}"
+        f"（可用：{', '.join(available_providers)}），將改以 CPU 執行。"
+        f"請安裝對應套件：{_EXTRA_FOR_DEVICE[device]}（需先移除已安裝的 CPU 版 onnxruntime）。"
+    )
 
 
 def _rapidocr_available() -> bool:

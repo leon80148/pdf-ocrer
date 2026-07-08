@@ -13,7 +13,12 @@ import numpy as np
 import pytest
 
 from pdf_ocrer.config import ConfigError, OcrConfig
-from pdf_ocrer.rapidocr_engine import RapidOcrEngine, lines_from_rapidocr
+from pdf_ocrer.rapidocr_engine import (
+    RapidOcrEngine,
+    _device_status_message,
+    _rapidocr_params,
+    lines_from_rapidocr,
+)
 
 
 def test_lines_from_rapidocr_converts_output_to_ocr_lines() -> None:
@@ -166,3 +171,95 @@ def test_pyproject_defines_rapidocr_extra() -> None:
         "rapidocr>=3.9",
         "onnxruntime>=1.19",
     ]
+
+
+def test_pyproject_defines_gpu_extras() -> None:
+    extras = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))["project"][
+        "optional-dependencies"
+    ]
+
+    assert extras["rapidocr-gpu-cuda"] == ["rapidocr>=3.9", "onnxruntime-gpu>=1.19"]
+    assert extras["rapidocr-gpu-dml"] == ["rapidocr>=3.9", "onnxruntime-directml>=1.19"]
+
+
+def test_rapidocr_params_maps_cuda_device() -> None:
+    params = _rapidocr_params(replace(OcrConfig(), device="cuda"))
+
+    assert params["EngineConfig.onnxruntime.use_cuda"] is True
+    assert "EngineConfig.onnxruntime.use_dml" not in params
+
+
+def test_rapidocr_params_maps_dml_device() -> None:
+    params = _rapidocr_params(replace(OcrConfig(), device="dml"))
+
+    assert params["EngineConfig.onnxruntime.use_dml"] is True
+    assert "EngineConfig.onnxruntime.use_cuda" not in params
+
+
+def test_rapidocr_params_cpu_device_sets_no_gpu_keys() -> None:
+    params = _rapidocr_params(replace(OcrConfig(), device="cpu"))
+
+    assert not any(key.endswith("use_cuda") or key.endswith("use_dml") for key in params)
+
+
+def test_rapidocr_params_maps_non_small_model_type() -> None:
+    params = _rapidocr_params(replace(OcrConfig(), model_type="server"))
+
+    assert params["Det.model_type"] == "server"
+    assert params["Rec.model_type"] == "server"
+
+
+def test_rapidocr_params_small_model_type_omits_model_keys() -> None:
+    params = _rapidocr_params(replace(OcrConfig(), model_type="small"))
+
+    assert "Det.model_type" not in params
+    assert "Rec.model_type" not in params
+
+
+def test_device_status_message_cpu_is_silent() -> None:
+    assert _device_status_message("cpu", ["CPUExecutionProvider"]) is None
+
+
+def test_device_status_message_reports_active_gpu() -> None:
+    msg = _device_status_message("cuda", ["CUDAExecutionProvider", "CPUExecutionProvider"])
+
+    assert msg is not None
+    assert "CUDAExecutionProvider" in msg
+
+
+def test_device_status_message_warns_when_provider_unavailable() -> None:
+    msg = _device_status_message("cuda", ["CPUExecutionProvider"])
+
+    assert msg is not None
+    assert "CUDAExecutionProvider" in msg
+    assert "rapidocr-gpu-cuda" in msg
+
+
+def test_device_status_message_dml_warns_with_dml_extra() -> None:
+    msg = _device_status_message("dml", ["CPUExecutionProvider"])
+
+    assert msg is not None
+    assert "rapidocr-gpu-dml" in msg
+
+
+def test_rapidocr_engine_logs_gpu_status_on_init(monkeypatch) -> None:
+    logs: list[str] = []
+
+    class FakeRapidOCR:
+        def __init__(self, **kwargs: object) -> None:
+            pass
+
+        def __call__(self, img: np.ndarray) -> SimpleNamespace:
+            return SimpleNamespace(boxes=None, txts=None, scores=None)
+
+    monkeypatch.setitem(sys.modules, "rapidocr", SimpleNamespace(RapidOCR=FakeRapidOCR))
+    monkeypatch.setitem(
+        sys.modules,
+        "onnxruntime",
+        SimpleNamespace(get_available_providers=lambda: ["CUDAExecutionProvider", "CPUExecutionProvider"]),
+    )
+    engine = RapidOcrEngine(replace(OcrConfig(), device="cuda"), logs.append)
+    engine.recognize(np.zeros((2, 2, 3), dtype=np.uint8))
+
+    assert "正在載入 OCR 模型…" in logs
+    assert any("CUDAExecutionProvider" in line for line in logs)

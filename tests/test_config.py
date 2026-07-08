@@ -300,6 +300,63 @@ def test_invalid_cpu_threads_range_raises(tmp_path, cpu_threads):
         load_config(p)
 
 
+def test_ocr_device_and_model_type_defaults():
+    cfg = OcrConfig()
+
+    assert cfg.device == "cpu"
+    assert cfg.model_type == "small"
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [("cpu", "cpu"), ("cuda", "cuda"), ("dml", "dml"), ("CUDA", "cuda"), ("Dml", "dml")],
+)
+def test_ocr_device_loads_and_normalizes(tmp_path, raw, expected):
+    p = tmp_path / "c.toml"
+    p.write_text(f'[ocr]\ndevice = "{raw}"\n', encoding="utf-8")
+
+    assert load_config(p).ocr.device == expected
+
+
+@pytest.mark.parametrize("bad", ["gpu", "npu", "gpu:0", "gpU"])
+def test_invalid_ocr_device_raises(tmp_path, bad):
+    p = tmp_path / "c.toml"
+    p.write_text(f'[ocr]\ndevice = "{bad}"\n', encoding="utf-8")
+
+    with pytest.raises(ConfigError, match="device.*cpu.*cuda.*dml"):
+        load_config(p)
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [("small", "small"), ("server", "server"), ("SERVER", "server"), ("Medium", "medium")],
+)
+def test_ocr_model_type_loads_and_normalizes(tmp_path, raw, expected):
+    p = tmp_path / "c.toml"
+    p.write_text(f'[ocr]\nmodel_type = "{raw}"\n', encoding="utf-8")
+
+    assert load_config(p).ocr.model_type == expected
+
+
+@pytest.mark.parametrize("bad", ["large", "huge", "v6", ""])
+def test_invalid_ocr_model_type_raises(tmp_path, bad):
+    p = tmp_path / "c.toml"
+    p.write_text(f'[ocr]\nmodel_type = "{bad}"\n', encoding="utf-8")
+
+    with pytest.raises(ConfigError, match="model_type"):
+        load_config(p)
+
+
+def test_old_config_loads_device_and_model_type_defaults(tmp_path):
+    p = tmp_path / "c.toml"
+    p.write_text("[ocr]\nengine = \"rapidocr\"\n", encoding="utf-8")
+
+    cfg = load_config(p)
+
+    assert cfg.ocr.device == "cpu"
+    assert cfg.ocr.model_type == "small"
+
+
 def test_gui_appearance_loads(tmp_path):
     p = tmp_path / "c.toml"
     p.write_text("[gui]\nappearance = \"dark\"\n", encoding="utf-8")

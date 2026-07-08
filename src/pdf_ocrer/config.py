@@ -28,6 +28,7 @@ class OcrConfig:
     engine: str = "paddle"
     cpu_threads: int = 0
     textline_orientation: bool = True
+    model_type: str = "small"
 
 
 @dataclass(frozen=True)
@@ -388,7 +389,26 @@ def _validate_ocr(cfg: OcrConfig) -> OcrConfig:
 
     _require_bool("textline_orientation", cfg.textline_orientation)
 
-    return cfg if engine == cfg.engine else replace(cfg, engine=engine)
+    if not isinstance(cfg.device, str):
+        raise ConfigError("設定欄位 device 必須是 cpu、cuda 或 dml")
+    device = cfg.device.casefold()
+    if device not in {"cpu", "cuda", "dml"}:
+        raise ConfigError("設定欄位 device 必須是 cpu、cuda 或 dml")
+
+    if not isinstance(cfg.model_type, str):
+        raise ConfigError("設定欄位 model_type 必須是 mobile、tiny、small、medium 或 server")
+    model_type = cfg.model_type.casefold()
+    if model_type not in {"mobile", "tiny", "small", "medium", "server"}:
+        raise ConfigError("設定欄位 model_type 必須是 mobile、tiny、small、medium 或 server")
+
+    changes: dict[str, str] = {}
+    if engine != cfg.engine:
+        changes["engine"] = engine
+    if device != cfg.device:
+        changes["device"] = device
+    if model_type != cfg.model_type:
+        changes["model_type"] = model_type
+    return replace(cfg, **changes) if changes else cfg
 
 
 def _validate_output(cfg: OutputConfig) -> OutputConfig:

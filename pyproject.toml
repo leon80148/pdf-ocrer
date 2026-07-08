@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "pdf-ocrer"
-version = "0.2.0"
+dynamic = ["version"]
 description = "Batch OCR scanned PDFs into searchable PDFs and rename them with an OpenAI-compatible LLM."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -35,6 +35,8 @@ dependencies = [
 [project.optional-dependencies]
 paddle-cpu = ["paddlepaddle==3.2.*"]
 rapidocr = ["rapidocr>=3.9", "onnxruntime>=1.19"]
+rapidocr-gpu-cuda = ["rapidocr>=3.9", "onnxruntime-gpu>=1.19"]
+rapidocr-gpu-dml = ["rapidocr>=3.9", "onnxruntime-directml>=1.19"]
 dev = ["pytest>=8", "ruff", "psutil", "pillow"]
 
 [project.scripts]
@@ -46,6 +48,9 @@ pdf-ocrer-gui = "pdf_ocrer.gui:run_gui"
 [project.urls]
 Homepage = "https://github.com/leon80148/pdf-ocrer"
 Issues = "https://github.com/leon80148/pdf-ocrer/issues"
+
+[tool.hatch.version]
+path = "src/pdf_ocrer/__init__.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/pdf_ocrer"]
